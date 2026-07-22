@@ -1,17 +1,21 @@
 """代理服务 - 转发客户端请求到上游 Provider
 
-核心流程：
-1. 验证 client key → 找到绑定的 Pool
-2. PoolRouter 选 PoolItem → 找到 Provider
-3. 转发请求到 Provider.base_url/chat/completions
-4. 失败回退到下一个 PoolItem
-5. 记录 RequestLog（含 token 统计、延迟、TTFT）
+增强功能：
+- 自动路由 + 故障转移（429/5xx 自动回退，最多 N 次）
+- 滑动窗口限流（4 维度，异步批量写入）
+- 冷却升级策略（429 指数增长）
+- 动态惩罚路由（429 时 +3，每 2 分钟 -1）
+- Sticky Session（多轮对话 30 分钟粘性）
+
+响应头：
+- X-Fallback-Attempts: 回退尝试次数
+- X-Routed-Via: 实际调用的 provider (id / model)
 """
 import time
 import json
 import uuid
 from datetime import datetime
-from typing import Optional, AsyncGenerator
+from typing import Optional, Tuple
 
 import httpx
 from sqlalchemy import select
@@ -22,6 +26,23 @@ from app.database import async_session
 from app.config import settings
 from app.models import ClientKey, Pool, PoolItem, Provider, RequestLog
 from app.services.pool_router import PoolRouter
+from app.services import provider_health as ph
+
+
+def _ensure_provider_state(item: PoolItem):
+    """确保 provider 已注册到 health 系统"""
+    if not item.provider:
+        return
+    state = ph.get_provider_state(item.provider.id)
+    if state is None:
+        state = ph.ProviderState(
+            provider_id=item.provider.id,
+            provider_name=item.provider.name,
+            base_url=item.provider.base_url,
+            is_active=item.provider.is_active,
+            base_priority=item.priority,
+        )
+        ph.register_provider(state)
 
 
 async def authenticate_client(
@@ -46,44 +67,67 @@ async def authenticate_client(
 def check_model_allowed(client_key: ClientKey, model: str) -> bool:
     """校验 client key 是否有权调用某个 model"""
     if not client_key.allowed_models:
-        return True  # 空数组 = 不限制
+        return True
     return model in client_key.allowed_models
 
 
 def resolve_pool_for_key(client_key: ClientKey, model: str) -> Optional[Pool]:
-    """从 client_key 绑定的 pool 找到（用客户端传入的 model 名匹配 Pool.name）"""
+    """从 client_key 绑定的 pool 找到（客户端请求的 model = pool.name）"""
     pool = client_key.pool
     if not pool or not pool.is_active:
         return None
     if pool.name != model:
-        return None  # 客户端请求的 model 必须等于 pool.name（一对一绑定模型）
+        return None
     return pool
 
 
-async def get_ordered_items(pool: Pool) -> list:
-    """根据 pool.strategy 给出按策略排序的候选 PoolItem 列表（用于失败回退）"""
+async def get_ordered_items(
+    pool: Pool,
+    strategy: str,
+    sticky_provider_id: Optional[int] = None,
+) -> Tuple[list, int]:
+    """
+    获取按策略排序的候选 PoolItem 列表（健康感知）。
+    返回 (list, fallback_count)
+    """
     router = PoolRouter(pool.pool_items)
-    return router.select_all_ordered(pool.strategy)
+    items, fallback_count = router.select_all_routable(strategy, sticky_provider_id)
+    # 确保所有 provider 已注册
+    for item in items:
+        _ensure_provider_state(item)
+    return items, fallback_count
 
 
+def is_multi_turn(messages: list) -> bool:
+    """判断是否是多轮对话"""
+    return any(m.get("role") == "assistant" for m in messages)
+
+
+def make_session_key(ip: str, first_user_message: str) -> str:
+    """生成 Sticky Session key"""
+    return StickySessionManager.make_key(ip, first_user_message)
+
+
+# ── 核心代理逻辑 ──────────────────────────────────────────────────
 async def proxy_json_request(
     pool: Pool,
     body: dict,
+    sticky_provider_id: Optional[int] = None,
 ) -> tuple:
-    """非流式代理
-
-    返回 (code, resp_dict, log_dict)
-    log_dict: 用于 make_log 构造 RequestLog 的 {pool_item_id, provider_id, prompt_tokens, completion_tokens, total_tokens, latency_ms, ttft_ms, error}
-    """
+    """非流式代理（增强版：限流/冷却/惩罚路由）"""
     start = time.time()
-    ordered = (await get_ordered_items(pool))
+    ordered, fallback_count = await get_ordered_items(pool, pool.strategy, sticky_provider_id)
 
     last_error = ""
+    last_provider_id = None
+    last_provider_model = None
+
     for item in ordered:
         if not item.provider or not item.provider.is_active:
             continue
         upstream_url = f"{item.provider.base_url.rstrip('/')}/chat/completions"
         upstream_body = {**body, "model": item.model, "stream": False}
+
         try:
             async with httpx.AsyncClient(timeout=settings.UPSTREAM_TIMEOUT) as client:
                 t0 = time.time()
@@ -96,56 +140,63 @@ async def proxy_json_request(
                     },
                 )
                 ttft = (time.time() - t0) * 1000
+                last_provider_id = item.provider.id
+                last_provider_model = item.model
+
                 if resp.status_code == 200:
+                    # 成功
+                    state = ph.get_provider_state(item.provider.id)
+                    if state:
+                        state.record_success()
                     data = resp.json()
                     usage = data.get("usage", {}) or {}
                     pt = usage.get("prompt_tokens", 0)
                     ct = usage.get("completion_tokens", 0)
+                    total = pt + ct
+                    if total > 0:
+                        await ph.record_request(item.provider.id, item.model, total)
                     return (
                         200,
                         data,
-                        {
-                            "pool_item_id": item.id,
-                            "provider_id": item.provider.id,
-                            "prompt_tokens": pt,
-                            "completion_tokens": ct,
-                            "total_tokens": pt + ct,
-                            "latency_ms": (time.time() - start) * 1000,
-                            "ttft_ms": ttft,
-                            "error": "",
-                        },
+                        _make_meta(
+                            item, fallback_count, start,
+                            pt=pt, ct=ct, ttft=ttft,
+                        ),
                     )
+                elif resp.status_code == 429:
+                    # 429：触发惩罚 + 冷却 + 限流记录
+                    state = ph.get_provider_state(item.provider.id)
+                    if state:
+                        dur = state.record_429()
+                    await ph.record_request(item.provider.id, item.model, tokens=0)
+                    last_error = f"Upstream 429 from {item.provider.name} -> cooldown {int(dur.total_seconds()) if 'dur' in dir() else '?'}s"
+                    continue
                 else:
-                    last_error = f"Upstream {resp.status_code}"
+                    last_error = f"Upstream {resp.status_code} from {item.provider.name}"
                     continue
         except httpx.TimeoutException:
             last_error = f"Timeout from {item.provider.name}"
         except Exception as e:
             last_error = f"{item.provider.name} error: {str(e)}"
-    return 502, {"error": {"message": f"All upstreams failed: {last_error}"}}, {
-        "pool_item_id": None,
-        "provider_id": None,
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "latency_ms": (time.time() - start) * 1000,
-        "ttft_ms": 0,
-        "error": last_error,
-    }
+
+    # 所有尝试都失败
+    return 502, {"error": {"message": f"All upstreams failed: {last_error}"}}, _make_meta_fail(
+        last_provider_id, last_provider_model, fallback_count, start, last_error
+    )
 
 
 async def proxy_stream_request(
     pool: Pool,
     body: dict,
+    sticky_provider_id: Optional[int] = None,
 ) -> tuple:
-    """流式代理 - 边收边吐
-
-    返回 (code, async_gen, log_callback)：
-    - code == 200: async_gen 是 yield 原汁原味 SSE bytes 的 generator
-    - log_callback: async 函数，在流完后调用，返回日志 dict
-    """
+    """流式代理（增强版）"""
     start = time.time()
-    ordered = await get_ordered_items(pool)
+    ordered, fallback_count = await get_ordered_items(pool, pool.strategy, sticky_provider_id)
+
+    last_error = ""
+    last_provider_id = None
+    last_provider_model = None
 
     for item in ordered:
         if not item.provider or not item.provider.is_active:
@@ -169,22 +220,21 @@ async def proxy_stream_request(
                 stream=True,
             )
             ttft = (time.time() - t0) * 1000
+            last_provider_id = item.provider.id
+            last_provider_model = item.model
+
             if resp.status_code == 200:
                 chosen_item_id = item.id
                 chosen_provider_id = item.provider.id
-                meta_container = {}  # gen finally 块写入这里，stream_with_log 读
+                meta_container: dict = {}
                 meta_container_ref = meta_container
-
 
                 async def gen():
                     total_tokens = 0
-                    yield_counter = 0
-                    gen_pt = [0]  # 最后从 usage 里解析的 pt
-                    gen_ct = [0]  # 同上 ct
+                    gen_pt = [0]
+                    gen_ct = [0]
                     try:
                         async for chunk in resp.aiter_bytes():
-                            yield_counter += 1
-                            # 尝试从 SSE 行里提 usage
                             for line in chunk.decode("utf-8", errors="replace").split("\n"):
                                 if line.startswith("data: "):
                                     payload = line[6:].strip()
@@ -194,40 +244,90 @@ async def proxy_stream_request(
                                             u = obj.get("usage", {}) or {}
                                             if u:
                                                 total_tokens = u.get("total_tokens", total_tokens)
-                                                pt_val = u.get("prompt_tokens", 0) or 0
-                                                ct_val = u.get("completion_tokens", 0) or 0
-                                                # 保存最后一次含 usage 的解析值
-                                                gen_pt[0] = pt_val
-                                                gen_ct[0] = ct_val
+                                                gen_pt[0] = u.get("prompt_tokens", 0) or 0
+                                                gen_ct[0] = u.get("completion_tokens", 0) or 0
                                         except json.JSONDecodeError:
                                             pass
                             yield chunk
                     finally:
                         await resp.aclose()
                         await client.aclose()
-                        meta_container_ref.update({
-                            "total_tokens": total_tokens,
-                            "prompt_tokens": gen_pt[0],
-                            "completion_tokens": gen_ct[0],
-                            "latency_ms": (time.time() - start) * 1000,
-                            "ttft_ms": ttft,
-                            "pool_item_id": chosen_item_id,
-                            "provider_id": chosen_provider_id,
-                            "error": "",
-                        })
+                        meta_container_ref.update(_make_meta(
+                            item, fallback_count, start,
+                            pt=gen_pt[0], ct=gen_ct[0], ttft=ttft,
+                        ))
 
                 return 200, gen(), meta_container
+            elif resp.status_code == 429:
+                state = ph.get_provider_state(item.provider.id)
+                if state:
+                    dur = state.record_429()
+                await ph.record_request(item.provider.id, item.model, tokens=0)
+                last_error = f"Upstream 429 from {item.provider.name}"
+                await resp.aread()
+                await resp.aclose()
+                await client.aclose()
+                continue
             else:
                 await resp.aread()
                 await resp.aclose()
                 await client.aclose()
-                last_error = f"Upstream {resp.status_code}"
+                last_error = f"Upstream {resp.status_code} from {item.provider.name}"
                 continue
         except httpx.TimeoutException:
             last_error = f"Timeout from {item.provider.name}"
         except Exception as e:
             last_error = f"{item.provider.name} error: {str(e)}"
+
     return 502, None, None
+
+
+def _make_meta(
+    item: PoolItem,
+    fallback_count: int,
+    start: float,
+    pt: int = 0,
+    ct: int = 0,
+    ttft: float = 0,
+    error: str = "",
+) -> dict:
+    return {
+        "pool_item_id": item.id,
+        "provider_id": item.provider.id,
+        "prompt_tokens": pt,
+        "completion_tokens": ct,
+        "total_tokens": pt + ct,
+        "latency_ms": (time.time() - start) * 1000,
+        "ttft_ms": ttft,
+        "error": error,
+        "headers": {
+            "X-Fallback-Attempts": str(fallback_count),
+            "X-Routed-Via": f"{item.provider.id} ({item.model})",
+        },
+    }
+
+
+def _make_meta_fail(
+    provider_id: Optional[int],
+    model: Optional[str],
+    fallback_count: int,
+    start: float,
+    error: str,
+) -> dict:
+    return {
+        "pool_item_id": None,
+        "provider_id": provider_id,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "latency_ms": (time.time() - start) * 1000,
+        "ttft_ms": 0,
+        "error": error,
+        "headers": {
+            "X-Fallback-Attempts": str(fallback_count),
+            "X-Routed-Via": f"{provider_id} ({model})" if provider_id else "",
+        },
+    }
 
 
 def make_log(
@@ -282,3 +382,22 @@ async def list_available_models(session: AsyncSession) -> list:
         {"id": p.name, "object": "model", "owned_by": "ai-gateway"}
         for p in pools
     ]
+
+
+# ── Sticky Session Manager 简单包装 ────────────────────────────────
+class StickySessionManager:
+    @staticmethod
+    def make_key(ip: str, first_user_message: str) -> str:
+        return ph.StickySessionManager_instance.make_key(ip, first_user_message)
+
+    @staticmethod
+    def bind(key: str, provider_id: int, model: str):
+        ph.StickySessionManager_instance.bind(key, provider_id, model)
+
+    @staticmethod
+    def resolve(key: str, valid_provider_ids: set[int]) -> Optional[Tuple[int, str]]:
+        return ph.StickySessionManager_instance.resolve(key, valid_provider_ids)
+
+    @staticmethod
+    def count() -> int:
+        return ph.StickySessionManager_instance.count()

@@ -121,3 +121,36 @@ class DailyStats(Base):
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
     avg_latency_ms: Mapped[float] = mapped_column(Float, default=0)
     avg_ttft_ms: Mapped[float] = mapped_column(Float, default=0)
+
+
+# ── Provider Health: 限流记录 + 冷却状态 ──────────────────────────
+
+class RateLimitEvent(Base):
+    """
+    限流事件记录（用于滑动窗口统计）
+    批量异步写入，不在请求关键路径上。
+    """
+    __tablename__ = "rate_limit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # key: provider_id + model（model 为空字符串表示该 provider 粒度不限模型）
+    provider_id: Mapped[int] = mapped_column(ForeignKey("providers.id", ondelete="CASCADE"), nullable=False)
+    model: Mapped[str] = mapped_column(String(100), default="")
+    # event: request / token / 429_reject
+    event_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    event_value: Mapped[int] = mapped_column(Integer, default=1)  # request=1 / token=实际数量
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+
+class ProviderCooldown(Base):
+    """Provider 冷却状态（冷却中跳过该 Provider）"""
+    __tablename__ = "provider_cooldowns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider_id: Mapped[int] = mapped_column(
+        ForeignKey("providers.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    cooldown_until: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    strike_count: Mapped[int] = mapped_column(Integer, default=1)  # 连续触发次数（用于冷却升级）
+    reason: Mapped[str] = mapped_column(String(100), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())

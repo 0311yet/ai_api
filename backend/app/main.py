@@ -10,15 +10,20 @@ from fastapi.responses import FileResponse
 
 from app.config import settings
 from app.database import init_db
-from app.routers import auth, providers, pools, keys, logs, stats, proxy
+from app.routers import auth, providers, pools, keys, logs, stats, proxy, health
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期：启动时初始化数据库"""
+    """应用生命周期：启动时初始化数据库 + 启动后台任务"""
     await init_db()
-    # 启动后台聚合任务（Stage 3 再加）
+    # 启动 Provider Health 后台任务
+    from app.services.provider_health import start_health_tasks
+    await start_health_tasks()
     yield
+    # shutdown
+    from app.services.provider_health import stop_health_tasks
+    await stop_health_tasks()
 
 
 app = FastAPI(
@@ -43,6 +48,7 @@ app.include_router(pools.router)
 app.include_router(keys.router)
 app.include_router(logs.router)
 app.include_router(stats.router)
+app.include_router(health.router)
 
 app.include_router(proxy.router)
 

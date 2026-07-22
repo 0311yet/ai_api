@@ -206,3 +206,42 @@ class ListResponse(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
+
+
+# ── Provider Health ───────────────────────────────────────────────
+class RateLimitWindow(BaseModel):
+    """单个时间窗口的用量"""
+    rpm: int = 0
+    rpd: int = 0
+    tpm: int = 0
+    tpd: int = 0
+
+
+class ProviderHealthItem(BaseModel):
+    """单个 Provider 的健康状态"""
+    provider_id: int
+    provider_name: str
+    base_url: str
+    is_active: bool
+    # 滑动窗口（从 DB 实时查）
+    rate_window: RateLimitWindow
+    # 冷却状态（无冷却则 cooldown_until 为空）
+    cooldown_until: Optional[str] = None  # ISO 字符串，无冷却时 null
+    strike_count: int = 0
+    # 惩罚分
+    penalty_score: int = 0
+    # 有效优先级（基础 - 惩罚分）
+    effective_priority: int = 0
+
+
+class PoolHealthOut(BaseModel):
+    pool_id: int
+    pool_name: str
+    strategy: str
+    providers: List[ProviderHealthItem]
+
+
+class HealthOverview(BaseModel):
+    """Provider 健康总览"""
+    pools: List[PoolHealthOut]
+    sticky_sessions_active: int

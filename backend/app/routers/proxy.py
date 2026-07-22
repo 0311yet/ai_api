@@ -16,6 +16,7 @@ from app.services.proxy import (
     authenticate_client, check_model_allowed, resolve_pool_for_key,
     proxy_json_request, proxy_stream_request,
     make_log, increment_key_usage, list_available_models,
+    is_multi_turn, StickySessionManager,
 )
 
 router = APIRouter(prefix="/v1", tags=["proxy"])
@@ -23,6 +24,25 @@ router = APIRouter(prefix="/v1", tags=["proxy"])
 
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else ""
+
+
+def _first_user_message(body: dict) -> str:
+    """从请求体里提取第一条用户消息内容（用于 sticky session key）"""
+    if "/v1/messages" in str(body):
+        # Anthropic 格式
+        for msg in body.get("messages", []):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    return content
+                if isinstance(content, list):
+                    return "".join(b.get("text", "") for b in content if b.get("type") == "text")
+    elif "/v1/chat/completions" in str(body):
+        # OpenAI 格式
+        for msg in body.get("messages", []):
+            if msg.get("role") == "user":
+                return str(msg.get("content", ""))
+    return ""
 
 
 @router.get("/models")
@@ -49,14 +69,27 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
     if not pool:
         raise HTTPException(404, f"No active pool matching model '{model}'")
 
-    is_stream = body.get("stream", False)
+    # Sticky Session：解析
     ip = _client_ip(request)
+    first_msg = _first_user_message(body)
+    is_stream = body.get("stream", False)
+    multi_turn = is_multi_turn(body.get("messages", []))
+    session_key = None
+    sticky_provider_id = None
+    if multi_turn and first_msg:
+        session_key = StickySessionManager.make_key(ip, first_msg)
+        valid_ids = {item.provider_id for item in pool.pool_items if item.is_active}
+        resolved = StickySessionManager.resolve(session_key, valid_ids)
+        if resolved:
+            sticky_provider_id = resolved[0]
+
     ua = request.headers.get("user-agent", "")
     request_id = str(uuid.uuid4())
     client_key_id = client_key.id
+    extra_headers = {}
 
     if is_stream:
-        code, gen, meta_container = await proxy_stream_request(pool, body)
+        code, gen, meta_container = await proxy_stream_request(pool, body, sticky_provider_id)
         if code != 200:
             log = make_log(client_key_id, model, request_id, "failed", {
                 "latency_ms": 0, "ttft_ms": 0, "error": "All upstreams failed",
@@ -76,6 +109,9 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
             finally:
                 meta = meta_container or {}
                 total_tokens = meta.get("total_tokens", 0)
+                # Sticky Session：成功后绑定
+                if session_key and meta.get("provider_id"):
+                    StickySessionManager.bind(session_key, meta["provider_id"], model)
                 async with async_session() as s:
                     log = make_log(
                         client_key_id, model, request_id, "success", meta,
@@ -91,12 +127,11 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
         return StreamingResponse(stream_with_log(), media_type="text/event-stream")
 
     else:
-        code, resp_data, meta = await proxy_json_request(pool, body)
+        code, resp_data, meta = await proxy_json_request(pool, body, sticky_provider_id)
         log = make_log(
             client_key_id, model, request_id,
             "success" if code == 200 else "failed",
-            meta,
-            ip=ip, ua=ua,
+            meta, ip=ip, ua=ua,
             request_body=json.dumps(body),
             response_body=json.dumps(resp_data)[:5000] if code == 200 else "",
             is_stream=False,
@@ -104,9 +139,14 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
         session.add(log)
         await session.commit()
         await increment_key_usage(client_key_id, meta.get("total_tokens", 0))
+        # Sticky Session：成功后绑定
+        if code == 200 and session_key and meta.get("provider_id"):
+            StickySessionManager.bind(session_key, meta["provider_id"], model)
+        # 注入响应头
+        extra_headers = meta.get("headers", {})
         if code == 200:
-            return JSONResponse(content=resp_data)
-        return JSONResponse(status_code=code, content=resp_data)
+            return JSONResponse(content=resp_data, headers=extra_headers)
+        return JSONResponse(status_code=code, content=resp_data, headers=extra_headers)
 
 
 # ---------- Anthropic /v1/messages 支持 ----------
@@ -229,16 +269,29 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
     if not pool:
         raise HTTPException(404, f"No active pool matching model '{model}'")
 
-    is_stream = body.get("stream", False)
+    # Sticky Session：解析
     ip = _client_ip(request)
+    first_msg = _first_user_message(body)
+    is_stream = body.get("stream", False)
+    multi_turn = is_multi_turn(body.get("messages", []))
+    session_key = None
+    sticky_provider_id = None
+    if multi_turn and first_msg:
+        session_key = StickySessionManager.make_key(ip, first_msg)
+        valid_ids = {item.provider_id for item in pool.pool_items if item.is_active}
+        resolved = StickySessionManager.resolve(session_key, valid_ids)
+        if resolved:
+            sticky_provider_id = resolved[0]
+
     ua = request.headers.get("user-agent", "")
     request_id = str(uuid.uuid4())
     client_key_id = client_key.id
     raw_request_body = json.dumps(body)
     openai_body = _anthropic_to_openai(body)
+    extra_headers = {}
 
     if is_stream:
-        code, gen, meta_container = await proxy_stream_request(pool, openai_body)
+        code, gen, meta_container = await proxy_stream_request(pool, openai_body, sticky_provider_id)
         if code != 200:
             log = make_log(client_key_id, model, request_id, "failed", {
                 "latency_ms": 0, "ttft_ms": 0, "error": "All upstreams failed",
@@ -265,6 +318,8 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
             finally:
                 meta = meta_container or {}
                 total_tokens = meta.get("total_tokens", 0)
+                if session_key and meta.get("provider_id"):
+                    StickySessionManager.bind(session_key, meta["provider_id"], model)
                 async with async_session() as s:
                     combined = b"".join(yield_buffer).decode("utf-8", errors="replace")[:5000]
                     log = make_log(
@@ -282,7 +337,7 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
             headers={"x-request-id": request_id},
         )
     else:
-        code, resp_data, meta = await proxy_json_request(pool, openai_body)
+        code, resp_data, meta = await proxy_json_request(pool, openai_body, sticky_provider_id)
         anthropic_resp = _openai_to_anthropic(resp_data, model, request_id)
         log = make_log(
             client_key_id, model, request_id,
@@ -295,8 +350,11 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
         session.add(log)
         await session.commit()
         await increment_key_usage(client_key_id, meta.get("total_tokens", 0))
+        if code == 200 and session_key and meta.get("provider_id"):
+            StickySessionManager.bind(session_key, meta["provider_id"], model)
+        extra_headers = meta.get("headers", {})
         if code == 200:
-            return JSONResponse(content=anthropic_resp)
+            return JSONResponse(content=anthropic_resp, headers=extra_headers)
         err_msg = resp_data.get("error", {}).get("message", "Proxy error")
         return JSONResponse(
             status_code=code,
@@ -304,4 +362,5 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
                 "type": "error",
                 "error": {"type": "invalid_request_error", "message": err_msg},
             },
+            headers=extra_headers,
         )
