@@ -223,6 +223,8 @@ class ProviderHealthItem(BaseModel):
     provider_name: str
     base_url: str
     is_active: bool
+    # 当前绑定的模型（来自 pool_item.model）
+    model: Optional[str] = None
     # 滑动窗口（从 DB 实时查）
     rate_window: RateLimitWindow
     # 冷却状态（无冷却则 cooldown_until 为空）

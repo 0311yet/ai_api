@@ -4,6 +4,12 @@ import { createDiscreteApi } from 'naive-ui'
 
 const { message } = createDiscreteApi(['message'])
 
+// ── health API ──
+export const healthAPI = {
+  overview: () => api.get('/admin/health/overview'),
+  rateLimit: (providerId: number) => api.get(`/admin/health/rate-limit/${providerId}`),
+}
+
 const api: AxiosInstance = axios.create({
   // 开发时指向本地后端；生产用相对路径（同源）
   baseURL: import.meta.env.VITE_API_BASE || '',

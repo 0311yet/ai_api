@@ -70,6 +70,7 @@ async def health_overview(session: AsyncSession = Depends(get_session)):
                 provider_name=provider.name,
                 base_url=provider.base_url,
                 is_active=provider.is_active,
+                model=pool_item.model or None,
                 rate_window=rate_window,
                 cooldown_until=cooldown_until,
                 strike_count=state.strike_count,

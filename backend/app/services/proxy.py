@@ -72,11 +72,9 @@ def check_model_allowed(client_key: ClientKey, model: str) -> bool:
 
 
 def resolve_pool_for_key(client_key: ClientKey, model: str) -> Optional[Pool]:
-    """从 client_key 绑定的 pool 找到（客户端请求的 model = pool.name）"""
+    """从 client_key 绑定的 pool 找到实际的 Pool 实例（model 过滤在 get_ordered_items 中做）"""
     pool = client_key.pool
     if not pool or not pool.is_active:
-        return None
-    if pool.name != model:
         return None
     return pool
 
@@ -88,9 +86,11 @@ async def get_ordered_items(
 ) -> Tuple[list, int]:
     """
     获取按策略排序的候选 PoolItem 列表（健康感知）。
-    返回 (list, fallback_count)
+    上游转发时用 pool_item.model（如为空则用客户端请求的 model）。
     """
-    router = PoolRouter(pool.pool_items)
+    # 不做 model 过滤 —— 所有 active pool_items 都是候选
+    # pool_item.model 决定转发给上游时用哪个模型
+    router = PoolRouter(list(pool.pool_items))
     items, fallback_count = router.select_all_routable(strategy, sticky_provider_id)
     # 确保所有 provider 已注册
     for item in items:
@@ -126,7 +126,11 @@ async def proxy_json_request(
         if not item.provider or not item.provider.is_active:
             continue
         upstream_url = f"{item.provider.base_url.rstrip('/')}/chat/completions"
-        upstream_body = {**body, "model": item.model, "stream": False}
+        upstream_body = {
+            **body,
+            "model": item.model or body.get("model", ""),
+            "stream": False,
+        }
 
         try:
             async with httpx.AsyncClient(timeout=settings.UPSTREAM_TIMEOUT) as client:
@@ -202,7 +206,11 @@ async def proxy_stream_request(
         if not item.provider or not item.provider.is_active:
             continue
         upstream_url = f"{item.provider.base_url.rstrip('/')}/chat/completions"
-        upstream_body = {**body, "model": item.model, "stream": True}
+        upstream_body = {
+            **body,
+            "model": item.model or body.get("model", ""),
+            "stream": True,
+        }
 
         try:
             t0 = time.time()

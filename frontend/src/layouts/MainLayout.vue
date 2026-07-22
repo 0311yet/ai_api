@@ -13,6 +13,7 @@ const navItems = [
   { name: 'Keys', path: '/keys', icon: 'key' },
   { name: 'Logs', path: '/logs', icon: 'receipt_long' },
   { name: 'Stats', path: '/stats', icon: 'query_stats' },
+  { name: 'Health', path: '/health', icon: 'sensors' },
 ]
 
 function logout() {
