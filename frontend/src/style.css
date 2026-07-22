@@ -1,0 +1,28 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 自定义滚动条（深色） */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #12121d; }
+::-webkit-scrollbar-thumb { background: #2e2e42; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #404752; }
+
+/* 全局 */
+body {
+  background: #12121d;
+  color: #ffffff;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Naive UI 覆盖：让 modal table 等也匹配 Stitch 深色色板 */
+:root body {
+  --n-color: #1f1e2a !important;  /* surface-container */
+  --n-color-modal: #1f1e2a !important;
+  --n-color-target: #1f1e2a !important;
+}

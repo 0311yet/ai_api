@@ -11,7 +11,6 @@ ENV/
 
 # Distribution / packaging
 build/
-dist/
 *.egg-info/
 *.egg
 
@@ -27,7 +26,6 @@ ai_gateway.db
 server.log
 
 # IDE
-.vscode/
 .idea/
 *.swp
 *.swo
@@ -39,3 +37,12 @@ Thumbs.db
 # Env
 .env
 .env.local
+
+# 前端依赖
+node_modules/
+
+# 本地构建 tarball
+dist_built.tar.gz
+
+# 保留 backend/alembic/versions 目录
+!backend/alembic/versions/
