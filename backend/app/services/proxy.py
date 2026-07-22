@@ -238,9 +238,8 @@ async def proxy_stream_request(
                 meta_container_ref = meta_container
 
                 async def gen():
-                    total_tokens = 0
-                    gen_pt = [0]
-                    gen_ct = [0]
+                    last_usage = {}
+                    completion_tokens = 0
                     try:
                         async for chunk in resp.aiter_bytes():
                             for line in chunk.decode("utf-8", errors="replace").split("\n"):
@@ -249,20 +248,32 @@ async def proxy_stream_request(
                                     if payload and payload != "[DONE]":
                                         try:
                                             obj = json.loads(payload)
-                                            u = obj.get("usage", {}) or {}
+                                            u = obj.get("usage", {})
                                             if u:
-                                                total_tokens = u.get("total_tokens", total_tokens)
-                                                gen_pt[0] = u.get("prompt_tokens", 0) or 0
-                                                gen_ct[0] = u.get("completion_tokens", 0) or 0
+                                                last_usage = u
+                                            # 累计 completion tokens（每个 delta 的 content 字符数累加）
+                                            deltas = obj.get("choices", [{}])
+                                            for choice in deltas:
+                                                delta = choice.get("delta", {})
+                                                if delta.get("content"):
+                                                    completion_tokens += len(delta["content"])
                                         except json.JSONDecodeError:
                                             pass
                             yield chunk
                     finally:
                         await resp.aclose()
                         await client.aclose()
+                        # 从最后一条 usage 提取 token 数（流式只在最后 chunk 返回）
+                        total = last_usage.get("total_tokens", 0)
+                        pt = last_usage.get("prompt_tokens")
+                        if pt is None:
+                            # 总 tokens 已知时反推 prompt_tokens
+                            ct_from_usage = last_usage.get("completion_tokens", 0)
+                            pt = max(0, total - ct_from_usage) if total else 0
+                        ct = last_usage.get("completion_tokens") or completion_tokens
                         meta_container_ref.update(_make_meta(
                             item, fallback_count, start,
-                            pt=gen_pt[0], ct=gen_ct[0], ttft=ttft,
+                            pt=pt, ct=ct, ttft=ttft,
                         ))
 
                 return 200, gen(), meta_container
