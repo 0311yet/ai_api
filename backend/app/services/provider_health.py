@@ -386,10 +386,18 @@ async def _restore_windows():
 
     保证容器重启后 RPD/TPD 不会归零。每分钟聚合成一个 bucket（与运行时行为一致），
     bucket 时间戳 = 该分钟内首条事件的时间。
+
+    Model key 处理（兼容旧数据）：
+    - 新事件（当前代码）：model = PoolItem.model（上游模型名，如 'z-ai/glm-5.2'）
+    - 旧事件（历史数据）：model = 客户端请求 model（如 'auto'），
+      通过 JOIN pool_items WHERE provider_id=pid 来反向查找对应上游 model。
+      若查不到则跳过（无效数据，不影响当前状态）。
     """
     from app.models import RateLimitEvent
+    from sqlalchemy import select
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=86400)
     async with async_session() as s:
+        # 查询最近 24h 事件，含 pool_item_id 让 JOIN 匹配
         result = await s.execute(
             select(
                 RateLimitEvent.provider_id,
@@ -399,36 +407,64 @@ async def _restore_windows():
                 RateLimitEvent.created_at,
             ).where(RateLimitEvent.created_at >= cutoff)
         )
-        # 按 (provider_id, model, minute) 聚合：request 求和、token 求和
-        # 每分钟只造一个 bucket，时间戳 = 该分钟内首条事件的真实时间
-        # 结构: {(pid, model): {minute_ts: [first_event_ts, req_sum, tok_sum]}}
-        agg: Dict[Tuple[int, str], Dict[int, list]] = {}
+
+        # 先构建 (provider_id, upstream_model) 的映射表
+        # 从 pool_items 表查各 provider 的活跃条目：provider_id -> upstream model 列表
+        # 正常情况下 provider_id -> one upstream model（一个 provider 对应一个 PoolItem.model）
+        provider_to_upstream: dict[int, str] = {}
+        from app.models import Provider, PoolItem
+        pi_rows = (await s.execute(
+            select(Provider.id, PoolItem.model)
+            .join(Provider, PoolItem.provider_id == Provider.id)
+            .where(PoolItem.is_active == True)
+        )).all()
+        for pid, upstream_model in pi_rows:
+            # 一个 provider 可能有多行（多个 PoolItem），取第一个有效值
+            if pid not in provider_to_upstream:
+                provider_to_upstream[pid] = upstream_model or ""
+
+        # 聚合事件：{(provider_id, upstream_model): {minute_ts: [first_ts, req_sum, tok_sum]}}
+        agg: dict[tuple[int, str], dict[int, list]] = {}
         for pid, model, evtype, value, created in result.all():
             if pid not in _PROVIDER_STATE:
                 continue
             if created is None:
                 continue
-            # created 可能带 tz（UTC），统一转 unix ts
+
+            # 解析时间
             cts = created
             if cts.tzinfo is None:
                 cts = cts.replace(tzinfo=timezone.utc)
             ts = cts.timestamp()
             minute_ts = int(ts // 60) * 60
-            key = (pid, model or "")
+
+            # 转换为上游 model 名
+            upstream = provider_to_upstream.get(pid, "")
+            # 如果 DB 里的 model 就是上游 model 名（当前代码行为）直接用它
+            # 如果 DB 里是客户端 model（如 'auto'），用 upstream
+            # 判断策略：DB model 是 PoolItem.model 里的值吗？
+            # 保守做法：直接用 upstream（最可靠，唯一对应 provider）
+            model_key = upstream or model or ""
+            if not model_key:
+                continue
+
+            key = (pid, model_key)
             bucket_map = agg.setdefault(key, {})
-            entry = bucket_map.setdefault(minute_ts, [ts, 0, 0])  # [first_ts, req_sum, tok_sum]
-            entry[0] = min(entry[0], ts)  # 该分钟内最早事件时间
+            entry = bucket_map.setdefault(minute_ts, [ts, 0, 0])
+            entry[0] = min(entry[0], ts)
             if evtype == "request":
                 entry[1] += int(value or 0)
             elif evtype == "token":
                 entry[2] += int(value or 0)
 
         # 填充到各 Provider 的 SlidingWindow
-        for (pid, model), bucket_map in agg.items():
+        total_providers = 0
+        total_buckets = 0
+        for (pid, model_key), bucket_map in agg.items():
             if pid not in _PROVIDER_STATE:
                 continue
-            sw = _PROVIDER_STATE[pid].get_window(model)
-            # 按时间升序填充
+            total_providers += 1
+            sw = _PROVIDER_STATE[pid].get_window(model_key)
             for minute_ts in sorted(bucket_map.keys()):
                 first_ts, req_sum, tok_sum = bucket_map[minute_ts]
                 sw._buckets.append(MinuteBucket(
@@ -436,11 +472,9 @@ async def _restore_windows():
                     request_count=req_sum,
                     token_count=tok_sum,
                 ))
+                total_buckets += 1
 
-        # 统计日志
-        total_buckets = sum(len(bm) for bm in agg.values())
-        providers_restored = len({pid for (pid, _) in agg.keys()})
-        print(f"[health] restored sliding windows: {providers_restored} providers, {total_buckets} minute-buckets")
+        print(f"[health] restored sliding windows: {total_providers} providers, {total_buckets} minute-buckets")
 
 
 async def _persist_cooldowns():
