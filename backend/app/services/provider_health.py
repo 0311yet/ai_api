@@ -65,13 +65,21 @@ class SlidingWindow:
         return int(time.time() // 60) * 60.0
 
     def add(self, token_count: int = 1):
-        """写入一条请求事件（token_count=本次 token 消耗）"""
-        now_min = self._current_minute()
-        if self._buckets and self._buckets[-1].ts == now_min:
+        """写入一条请求事件。
+
+        bucket 时间戳用请求实际发生时刻 (time.time())，而非整分钟起点，
+        这样 count(60) 才是真正的 60 秒滑动窗口——请求后恰好 60 秒过期。
+        同一分钟内的多次请求合并到该分钟的首个 bucket（按分钟对齐判断）。
+        """
+        now = time.time()
+        now_min = int(now // 60) * 60.0
+        if self._buckets and abs(self._buckets[-1].ts - now_min) < 1e-6:
+            # 同一分钟，合并到该 bucket（首条请求的时间戳保留）
             self._buckets[-1].request_count += 1
             self._buckets[-1].token_count += token_count
         else:
-            self._buckets.append(MinuteBucket(ts=now_min, request_count=1, token_count=token_count))
+            # 新分钟，新建 bucket，时间戳用请求实际时刻
+            self._buckets.append(MinuteBucket(ts=now, request_count=1, token_count=token_count))
 
     def _get_buckets_under(self, window_seconds: float) -> list:
         """返回窗口内的所有 bucket，清除过期数据"""
