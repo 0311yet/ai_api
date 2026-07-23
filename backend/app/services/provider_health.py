@@ -477,6 +477,12 @@ async def _restore_windows():
                 total_buckets += 1
 
         print(f"[health] restored sliding windows: {total_providers} providers, {total_buckets} minute-buckets")
+        # 立即验证：检查第一个 provider 的窗口
+        if _PROVIDER_STATE:
+            pid0 = next(iter(_PROVIDER_STATE))
+            st0 = _PROVIDER_STATE[pid0]
+            for m, sw in st0.windows.items():
+                print(f"[health] VERIFY pid={pid0} model={m!r} rpd={sw.count(86400)} buckets={len(sw._buckets)}")
 
 
 async def _persist_cooldowns():
