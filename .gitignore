@@ -46,3 +46,4 @@ dist_built.tar.gz
 
 # 保留 backend/alembic/versions 目录
 !backend/alembic/versions/
+memory.md
