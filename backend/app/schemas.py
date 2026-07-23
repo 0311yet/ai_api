@@ -123,7 +123,12 @@ class RequestLogOut(BaseModel):
     client_key_id: Optional[int]
     pool_item_id: Optional[int]
     provider_id: Optional[int]
+    # 客户端请求的 model（= pool.name，如 "auto"）
     model: str
+    # 上游实际调用的模型名称（来自 PoolItem.model）
+    upstream_model: Optional[str] = None
+    # 所属模型池名称（来自 Pool.name）
+    pool_name: Optional[str] = None
     request_id: str
     status: str
     prompt_tokens: int
@@ -135,6 +140,32 @@ class RequestLogOut(BaseModel):
     ip_address: str
     is_stream: bool
     created_at: datetime
+
+    @classmethod
+    def from_orm_with_pool(cls, log, pool_item, pool) -> "RequestLogOut":
+        """从 ORM 对象构造，附加 pool_item 和 pool 的字段"""
+        upstream = pool_item.model if pool_item else None
+        pool_nm = pool.name if pool else None
+        return cls(
+            id=log.id,
+            client_key_id=log.client_key_id,
+            pool_item_id=log.pool_item_id,
+            provider_id=log.provider_id,
+            model=log.model,
+            upstream_model=upstream,
+            pool_name=pool_nm,
+            request_id=log.request_id,
+            status=log.status,
+            prompt_tokens=log.prompt_tokens,
+            completion_tokens=log.completion_tokens,
+            total_tokens=log.total_tokens,
+            latency_ms=log.latency_ms,
+            ttft_ms=log.ttft_ms,
+            error_message=log.error_message,
+            ip_address=log.ip_address,
+            is_stream=log.is_stream,
+            created_at=log.created_at,
+        )
 
     class Config:
         from_attributes = True
