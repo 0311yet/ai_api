@@ -48,6 +48,11 @@ const router = createRouter({
           name: 'Health',
           component: () => import('../views/Health.vue'),
         },
+        {
+          path: 'rates',
+          name: 'Rates',
+          component: () => import('../views/Rates.vue'),
+        },
       ],
     },
   ],

@@ -14,6 +14,7 @@ const navItems = [
   { name: 'Logs', path: '/logs', icon: 'receipt_long' },
   { name: 'Stats', path: '/stats', icon: 'query_stats' },
   { name: 'Health', path: '/health', icon: 'sensors' },
+  { name: 'Rates', path: '/rates', icon: 'paid' },
 ]
 
 function logout() {

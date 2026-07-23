@@ -48,6 +48,13 @@ function fmt(n: number) {
   return String(n)
 }
 
+// 成本格式化：小额用 6 位小数，大额用 2 位
+function fmtCost(n: number) {
+  if (!n) return '$0.000000'
+  if (n >= 1) return '$' + n.toFixed(2)
+  return '$' + n.toFixed(6)
+}
+
 // safe getter for stats (avoids undefined access)
 function sv(key: string, fallback = 0) {
   return stats.value?.[key] ?? fallback
@@ -120,6 +127,22 @@ const latencyTrendOption = computed(() => ({
           <StatCard label="Success Rate" :value="sv('success_rate').toFixed(1) + '%'" accent-color="success" />
           <StatCard label="Total Tokens" :value="fmt(sv('total_tokens'))" accent-color="purple" />
           <StatCard label="Avg Latency" :value="Math.round(sv('avg_latency_ms')) + 'ms'" accent-color="orange" />
+        </div>
+
+        <!-- Cost Stat Cards: accumulated free/paid token cost -->
+        <div class="grid grid-cols-2 gap-4">
+          <StatCard
+            label="免费 API 累计成本"
+            :value="fmtCost(sv('free_cost', 0))"
+            accent-color="success"
+            sub="按免费 API 费率根据 request_logs 累加"
+          />
+          <StatCard
+            label="付费 API 累计成本"
+            :value="fmtCost(sv('paid_cost', 0))"
+            accent-color="warning"
+            sub="按付费 API 费率根据 request_logs 累加"
+          />
         </div>
 
         <!-- Secondary cards -->
