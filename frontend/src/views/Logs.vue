@@ -23,22 +23,25 @@ const statusOptions = [
 ]
 
 const columns = [
-  { title: 'ID', key: 'id', width: 60 },
+  { title: 'ID', key: 'id', width: 55 },
   { title: 'Time', key: 'created_at', width: 170,
     render: (r: any) => h('span', { class: 'text-[12px] text-text-secondary' }, r.created_at?.replace('T', ' ').slice(0, 19)) },
-  { title: 'Model', key: 'model', width: 140, render: (r: any) => h('span', { class: 'font-mono text-[12px]' }, r.model) },
-  { title: 'Status', key: 'status', width: 90,
+  { title: 'Pool', key: 'model', width: 90,
+    render: (r: any) => h('span', { class: 'font-mono text-[12px] text-primary' }, r.model) },
+  { title: 'Upstream Model', key: 'upstream_model', width: 200,
+    render: (r: any) => h('span', { class: 'font-mono text-[12px] text-text-secondary' }, r.upstream_model || '—') },
+  { title: 'Status', key: 'status', width: 85,
     render: (r: any) => r.status === 'success'
       ? h(NTag, { type: 'success', size: 'small', round: true }, { default: () => 'Success' })
       : h(NTag, { type: 'error', size: 'small', round: true }, { default: () => 'Failed' }) },
-  { title: 'Tokens', key: 'total_tokens', width: 110,
+  { title: 'Tokens', key: 'total_tokens', width: 105,
     render: (r: any) => h('span', { class: 'font-mono text-[12px] text-text-secondary' },
       `${r.prompt_tokens || 0}+${r.completion_tokens || 0}=${r.total_tokens || 0}`) },
-  { title: 'Latency', key: 'latency_ms', width: 80,
+  { title: 'Latency', key: 'latency_ms', width: 78,
     render: (r: any) => h('span', { class: 'font-mono text-[12px]' }, `${Math.round(r.latency_ms)}ms`) },
-  { title: 'TTFT', key: 'ttft_ms', width: 80,
+  { title: 'TTFT', key: 'ttft_ms', width: 78,
     render: (r: any) => h('span', { class: 'font-mono text-[12px]' }, `${Math.round(r.ttft_ms)}ms`) },
-  { title: 'Actions', key: 'actions', width: 70,
+  { title: 'Actions', key: 'actions', width: 65,
     render: (r: any) => h(NButton, { size: 'tiny', onClick: () => showDetail(r) }, { default: () => 'Detail' }) },
 ]
 
@@ -94,7 +97,9 @@ onMounted(load)
       <div v-if="detail" class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
         <div class="text-text-secondary">ID</div><div class="font-mono text-[12px]">{{ detail.id }}</div>
         <div class="text-text-secondary">Request ID</div><div class="font-mono text-[11px] break-all">{{ detail.request_id }}</div>
-        <div class="text-text-secondary">Model</div><div class="font-mono text-[12px]">{{ detail.model }}</div>
+        <div class="text-text-secondary">Pool</div><div class="font-mono text-[12px] text-primary">{{ detail.model }}</div>
+        <div class="text-text-secondary">Upstream Model</div><div class="font-mono text-[12px]">{{ detail.upstream_model || '—' }}</div>
+        <div class="text-text-secondary">Pool Name</div><div class="font-mono text-[12px]">{{ detail.pool_name || detail.model }}</div>
         <div class="text-text-secondary">Status</div><div :class="detail.status === 'success' ? 'text-success' : 'text-error'">{{ detail.status }}</div>
         <div class="text-text-secondary">Prompt Tokens</div><div class="font-mono">{{ detail.prompt_tokens }}</div>
         <div class="text-text-secondary">Completion Tokens</div><div class="font-mono">{{ detail.completion_tokens }}</div>
