@@ -366,6 +366,7 @@ async def _register_all_providers():
             .join(PoolItem, PoolItem.provider_id == Provider.id)
             .join(Pool, PoolItem.pool_id == Pool.id)
             .where(PoolItem.is_active == True, Provider.is_active == True)
+            .order_by(Provider.id, PoolItem.priority)
         )).all()
         for provider, pool_item, pool in rows:
             if provider.id not in _PROVIDER_STATE:
@@ -409,17 +410,18 @@ async def _restore_windows():
         )
 
         # 先构建 (provider_id, upstream_model) 的映射表
-        # 从 pool_items 表查各 provider 的活跃条目：provider_id -> upstream model 列表
-        # 正常情况下 provider_id -> one upstream model（一个 provider 对应一个 PoolItem.model）
+        # 从 pool_items 表查各 provider 的活跃条目，取 priority 最小（最高优先级）的那个 model
+        # 这样 provider_to_upstream[pid] 精确对应 health_overview 中 primary PoolItem 的 model
         provider_to_upstream: dict[int, str] = {}
         from app.models import Provider, PoolItem
         pi_rows = (await s.execute(
             select(Provider.id, PoolItem.model)
             .join(Provider, PoolItem.provider_id == Provider.id)
             .where(PoolItem.is_active == True)
+            .order_by(Provider.id, PoolItem.priority)
         )).all()
         for pid, upstream_model in pi_rows:
-            # 一个 provider 可能有多行（多个 PoolItem），取第一个有效值
+            # 每个 provider 只取 priority 最小的那个（最高优先级）
             if pid not in provider_to_upstream:
                 provider_to_upstream[pid] = upstream_model or ""
 
