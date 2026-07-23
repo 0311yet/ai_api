@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, h, computed } from 'vue'
+import { ref, onMounted, h } from 'vue'
 import { NDataTable, NButton, NModal, NForm, NFormItem, NInput, NSelect, NSwitch, NTag, NInputNumber, useMessage } from 'naive-ui'
 import TopBar from '../components/TopBar.vue'
 import api from '../api'
@@ -30,16 +30,8 @@ const strategyTag: Record<string, { color: string; icon: string }> = {
 // Config Modal state
 const configItems = ref<any[]>([])
 const showAddItemModal = ref(false)
-const itemForm = ref({ platform_id: null as number | null, key_label: null as string | null, model: '', priority: 1, weight: 1, is_active: true })
+const itemForm = ref({ platform_id: null as number | null, model: '', priority: 1, weight: 1, is_active: true })
 
-// Computed: keys for the currently selected platform
-const selectedPlatformKeys = computed(() => {
-  const platform = platforms.value.find((p: any) => p.id === itemForm.value.platform_id)
-  if (!platform) return []
-  return (platform.platform_keys || [])
-    .filter((k: any) => k.enabled && k.is_active)
-    .map((k: any) => ({ label: `key-${k.label}`, value: k.label }))
-})
 
 const poolColumns = [
   { title: 'Pool ID', key: 'name', width: 130,
@@ -82,7 +74,7 @@ const itemColumns = [
   { title: 'Platform', key: 'platform_name',
     render: (r: any) => h('div', { class: 'flex items-center gap-1.5' }, [
       h('span', { class: 'font-semibold text-sm text-text-primary' }, r.platform_name || `Platform #${r.platform_id}`),
-      r.key_label ? h(NTag, { size: 'tiny', round: true, type: 'info' }, { default: () => `key-${r.key_label}` }) : null,
+      r.key_label ? h(NTag, { size: 'tiny', round: true, type: 'info' }, { default: () => `key-${r.key_label}` }) : null
     ].filter(Boolean)) },
   { title: 'Model Name', key: 'model', render: (r: any) => h('span', { class: 'font-mono text-[13px] text-text-secondary' }, r.model) },
   { title: 'Weight', key: 'weight', width: 80, align: 'center' as const,
@@ -127,14 +119,13 @@ async function handleDelete(id: number) { await api.delete(`/admin/pools/${id}`)
 
 // Add item to pool
 function openAddItem() {
-  itemForm.value = { platform_id: null, key_label: null, model: '', priority: 1, weight: 1, is_active: true }
+  itemForm.value = { platform_id: null, model: '', priority: 1, weight: 1, is_active: true }
   showAddItemModal.value = true
 }
 async function handleAddItem() {
   if (!itemForm.value.platform_id || !itemForm.value.model) return message.warning('Platform 和 Model 必填')
   await api.post(`/admin/pools/${configPool.value.id}/items`, {
     platform_id: itemForm.value.platform_id,
-    key_label: itemForm.value.key_label || undefined,
     model: itemForm.value.model,
     priority: itemForm.value.priority,
     weight: itemForm.value.weight,
@@ -225,9 +216,6 @@ onMounted(load)
       <NForm label-placement="top">
         <NFormItem label="Platform">
           <NSelect v-model:value="itemForm.platform_id" :options="platforms.map((p:any) => ({label: p.name, value: p.id, disabled: !p.is_active}))" placeholder="Select platform" />
-        </NFormItem>
-        <NFormItem v-if="itemForm.platform_id" label="Key Label (optional, leave empty to use all keys)">
-          <NSelect v-model:value="itemForm.key_label" :options="selectedPlatformKeys" placeholder="All enabled keys" clearable />
         </NFormItem>
         <NFormItem label="Model Name"><NInput v-model:value="itemForm.model" placeholder="e.g. gpt-4o, deepseek-v4-pro" /></NFormItem>
         <NFormItem label="Priority (1 = highest)"><NInputNumber v-model:value="itemForm.priority" :min="1" /></NFormItem>

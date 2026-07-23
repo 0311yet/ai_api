@@ -9,13 +9,10 @@ const message = useMessage()
 const pools = ref<any[]>([])
 const stickyActive = ref(0)
 
-interface ProviderHealth {
-  provider_id: number
-  provider_name: string
-  base_url: string
-  is_active: boolean
+interface KeyHealth {
   platform_key_id: number
   key_label: string
+  is_active: boolean
   rate_window: { rpm: number; rpd: number; tpm: number; tpd: number }
   cooldown_until: string | null
   strike_count: number
@@ -23,11 +20,13 @@ interface ProviderHealth {
   effective_priority: number
 }
 
-function getStatus(p: ProviderHealth) {
-  if (!p.is_active) return { type: 'warning', label: 'Disabled' } as const
-  if (p.cooldown_until) return { type: 'error', label: 'Cooldown' } as const
-  if (p.penalty_score >= 5) return { type: 'warning', label: 'High Penalty' } as const
-  if (p.rate_window.rpm > 50 || p.rate_window.tpm > 5000) return { type: 'warning', label: 'High Load' } as const
+// interfaces inlined via :any in template
+
+function getStatus(k: KeyHealth) {
+  if (!k.is_active) return { type: 'warning', label: 'Disabled' } as const
+  if (k.cooldown_until) return { type: 'error', label: 'Cooldown' } as const
+  if (k.penalty_score >= 5) return { type: 'warning', label: 'High Penalty' } as const
+  if (k.rate_window.rpm > 50 || k.rate_window.tpm > 5000) return { type: 'warning', label: 'High Load' } as const
   return { type: 'success', label: 'Healthy' } as const
 }
 
@@ -71,7 +70,6 @@ async function load(manual: boolean = false) {
 
 function manualRefresh() {
   load(true)
-  // 手动刷新后重置 3s 倍表，避免点完快临近下一轮
   if (refreshTimer) {
     clearInterval(refreshTimer)
     refreshTimer = setInterval(load, REFRESH_INTERVAL_MS)
@@ -106,8 +104,11 @@ onUnmounted(() => {
       <div>
         <div class="flex items-center justify-between gap-3 flex-wrap">
           <div>
-            <h1 class="text-[20px] font-semibold text-text-primary">Provider Health</h1>
-            <p class="text-sm text-text-secondary mt-0.5">Monitor upstream providers, rate limits, cooldowns, and penalties</p>
+            <h1 class="text-[20px] font-semibold text-text-primary">Platform Health</h1>
+            <p class="text-sm text-text-secondary mt-0.5">
+              Monitor platforms, rate limits, cooldowns, and penalties.
+              Each model shows all available keys — backend auto-selects on each request.
+            </p>
           </div>
           <div class="flex items-center gap-1.5 text-xs text-text-secondary font-mono">
             <span class="w-1.5 h-1.5 rounded-full bg-success inline-block animate-pulse"></span>
@@ -123,7 +124,7 @@ onUnmounted(() => {
         <div class="flex items-center gap-2 text-sm">
           <span class="material-symbols-outlined text-primary text-base">auto_awesome</span>
           <span class="text-primary font-semibold">Sticky Sessions Active:</span>
-          <span class="text-text-secondary">{{ stickyActive }} conversation(s) locked to specific providers</span>
+          <span class="text-text-secondary">{{ stickyActive }} conversation(s) locked to specific keys</span>
         </div>
       </NCard>
 
@@ -143,121 +144,118 @@ onUnmounted(() => {
             <div class="flex items-center gap-2 flex-wrap">
               <span class="font-semibold text-sm text-text-primary">{{ pool.pool_name }}</span>
               <NTag size="tiny" type="info">{{ pool.strategy }}</NTag>
-              <NTag
-                size="tiny"
-                :type="pool.providers?.length > 0 ? 'success' : 'warning'"
-              >
-                {{ pool.providers?.length || 0 }} provider(s)
+              <NTag size="tiny" :type="(pool.items?.length || 0) > 0 ? 'success' : 'warning'">
+                {{ pool.items?.length || 0 }} model(s)
               </NTag>
             </div>
           </template>
 
-          <!-- No providers -->
+          <!-- Empty state -->
           <NEmpty
-            v-if="!pool.providers?.length"
+            v-if="!pool.items?.length"
             size="small"
-            description="No providers in this pool. Add providers in Pools management."
+            description="No models in this pool. Add models in Pools management."
             class="py-8"
           />
 
-          <!-- Provider grid -->
+          <!-- Pool item grid -->
           <div
             v-else
             class="grid gap-3 p-4"
-            :style="{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }"
+            :style="{ gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }"
           >
+            <!-- Each PoolItem = Platform + Model combination -->
             <div
-              v-for="p in pool.providers"
-              :key="p.provider_id"
-              class="bg-surface-container-lowest border border-border rounded-xl p-4 hover:border-primary/50 transition-colors"
+              v-for="item in pool.items"
+              :key="item.pool_item_id"
+              class="bg-surface-container-lowest border border-border rounded-xl overflow-hidden"
             >
-              <!-- Provider header -->
-              <div class="flex items-start justify-between gap-2">
-                <div class="flex-1 min-w-0">
-                  <div class="flex items-center gap-1.5">
-                    <span class="font-mono text-[11px] text-text-secondary">#{{ p.provider_id }}</span>
-                    <NTag size="tiny" type="info" round>key-{{ p.key_label }}</NTag>
-                    <NTag size="tiny" :type="getStatus(p).type" round>{{ getStatus(p).label }}</NTag>
-                  </div>
-                  <div class="font-semibold text-sm text-text-primary mt-1 truncate" :title="p.provider_name">
-                    {{ p.provider_name }}
-                  </div>
-                  <div class="mt-1 flex items-center gap-1 flex-wrap"
-                    v-if="p.model"
-                  >
-                    <span class="font-mono text-[11px] font-semibold text-primary bg-primary/10 px-1.5 py-0.5 rounded">
-                      {{ p.model }}
-                    </span>
-                  </div>
-                  <div class="font-mono text-[11px] text-text-secondary mt-0.5 truncate" :title="p.base_url">
-                    {{ p.base_url }}
-                  </div>
+              <!-- PoolItem header -->
+              <div class="px-4 pt-4 pb-3 border-b border-border">
+                <div class="flex items-center gap-1.5 mb-1.5">
+                  <NTag size="small" type="info">Platform #{{ item.platform_id }}</NTag>
+                  <NTag size="small" :type="item.is_active ? 'success' : 'warning'" round>
+                    {{ item.is_active ? 'Active' : 'Disabled' }}
+                  </NTag>
+                  <span class="ml-auto text-[11px] text-text-secondary font-mono">
+                    prio {{ item.priority }}
+                  </span>
+                </div>
+                <div class="font-semibold text-sm text-text-primary truncate">{{ item.platform_name }}</div>
+                <div class="font-mono text-[13px] text-primary font-semibold mt-1">{{ item.model }}</div>
+                <div class="font-mono text-[11px] text-text-secondary truncate mt-0.5" :title="item.base_url">
+                  {{ item.base_url }}
                 </div>
               </div>
 
-              <!-- Priority / Penalty row -->
-              <div class="mt-3 grid grid-cols-2 gap-2">
-                <div class="bg-surface-container-low p-2 rounded-lg">
-                  <div class="text-[11px] text-text-secondary">Effective Priority</div>
-                  <div class="font-mono text-sm font-bold text-text-primary mt-0.5">
-                    {{ p.effective_priority }}
+              <!-- Keys list -->
+              <div class="px-4 py-3 space-y-2">
+                <div
+                  v-for="k in item.available_keys"
+                  :key="k.platform_key_id"
+                  class="bg-surface-container-low rounded-lg p-3"
+                >
+                  <!-- Key header -->
+                  <div class="flex items-center gap-1.5 mb-2">
+                    <span class="font-mono text-[11px] text-text-secondary">#{{ k.platform_key_id }}</span>
+                    <NTag size="tiny" type="info" round>key-{{ k.key_label }}</NTag>
+                    <NTag size="tiny" :type="getStatus(k).type" round>{{ getStatus(k).label }}</NTag>
                   </div>
-                  <div class="text-[10px] text-text-secondary font-mono">base − {{ p.penalty_score }}</div>
-                </div>
-                <div class="bg-surface-container-low p-2 rounded-lg">
-                  <div class="text-[11px] text-text-secondary">Penalty Score</div>
-                  <div
-                    class="font-mono text-sm font-bold mt-0.5"
-                    :class="p.penalty_score === 0 ? 'text-success' : p.penalty_score <= 2 ? 'text-warning' : 'text-error'"
-                  >
-                    {{ p.penalty_score }}
-                  </div>
-                  <div v-if="p.strike_count > 0" class="text-[10px] text-warning font-mono">
-                    ⚠ {{ p.strike_count }} strike(s)
-                  </div>
-                </div>
-              </div>
 
-              <!-- Cooldown -->
-              <div v-if="p.cooldown_until" class="mt-3">
-                <div class="flex items-center justify-between text-[11px] mb-1">
-                  <span class="text-error font-semibold">Cooldown</span>
-                  <span class="text-error font-mono font-bold">{{ cooldownRemaining(p.cooldown_until) }}</span>
-                </div>
-                <NProgress
-                  type="line"
-                  :percentage="cooldownProgress(p.cooldown_until)"
-                  :height="6"
-                  :border-radius="3"
-                  :fill-border-radius="3"
-                  :show-indicator="false"
-                  :processing="true"
-                  :rail-color="'#2e2e42'"
-                />
-                <div class="text-[10px] text-text-secondary mt-1">
-                  {{ p.strike_count }} strike(s) → cooldown escalation active
-                </div>
-              </div>
+                  <!-- Rate window -->
+                  <div class="grid grid-cols-4 gap-1 text-[11px] mb-2">
+                    <div class="text-center">
+                      <div class="font-mono font-bold text-text-primary">{{ k.rate_window.rpm }}</div>
+                      <div class="text-text-secondary">RPM</div>
+                    </div>
+                    <div class="text-center">
+                      <div class="font-mono font-bold text-text-primary">{{ k.rate_window.rpd }}</div>
+                      <div class="text-text-secondary">RPD</div>
+                    </div>
+                    <div class="text-center">
+                      <div class="font-mono font-bold text-text-primary">{{ k.rate_window.tpm }}</div>
+                      <div class="text-text-secondary">TPM</div>
+                    </div>
+                    <div class="text-center">
+                      <div class="font-mono font-bold text-text-primary">{{ k.rate_window.tpd }}</div>
+                      <div class="text-text-secondary">TPD</div>
+                    </div>
+                  </div>
 
-              <!-- Rate Window -->
-              <div class="mt-3">
-                <div class="text-[11px] text-text-secondary mb-1">Rate Window (1h / 24h)</div>
-                <div class="grid grid-cols-2 gap-1">
-                  <div class="flex justify-between text-[12px]">
-                    <span class="text-text-secondary">RPM</span>
-                    <span class="font-mono font-bold text-text-primary">{{ p.rate_window.rpm }}</span>
+                  <!-- Penalty & priority -->
+                  <div class="grid grid-cols-2 gap-2 mb-2">
+                    <div class="bg-surface-container-lowest p-1.5 rounded text-center">
+                      <div class="text-[10px] text-text-secondary">Effective Prio</div>
+                      <div class="font-mono text-[13px] font-bold text-text-primary">{{ k.effective_priority }}</div>
+                    </div>
+                    <div class="bg-surface-container-lowest p-1.5 rounded text-center">
+                      <div class="text-[10px] text-text-secondary">Penalty</div>
+                      <div class="font-mono text-[13px] font-bold"
+                        :class="k.penalty_score === 0 ? 'text-success' : k.penalty_score <= 2 ? 'text-warning' : 'text-error'">
+                        {{ k.penalty_score }}
+                      </div>
+                    </div>
                   </div>
-                  <div class="flex justify-between text-[12px]">
-                    <span class="text-text-secondary">RPD</span>
-                    <span class="font-mono font-bold text-text-primary">{{ p.rate_window.rpd }}</span>
-                  </div>
-                  <div class="flex justify-between text-[12px]">
-                    <span class="text-text-secondary">TPM</span>
-                    <span class="font-mono font-bold text-text-primary">{{ p.rate_window.tpm }}</span>
-                  </div>
-                  <div class="flex justify-between text-[12px]">
-                    <span class="text-text-secondary">TPD</span>
-                    <span class="font-mono font-bold text-text-primary">{{ p.rate_window.tpd }}</span>
+
+                  <!-- Cooldown -->
+                  <div v-if="k.cooldown_until" class="mt-1">
+                    <div class="flex items-center justify-between text-[10px] mb-0.5">
+                      <span class="text-error font-semibold">Cooldown</span>
+                      <span class="text-error font-mono font-bold">{{ cooldownRemaining(k.cooldown_until) }}</span>
+                    </div>
+                    <NProgress
+                      type="line"
+                      :percentage="cooldownProgress(k.cooldown_until)"
+                      :height="4"
+                      :border-radius="2"
+                      :fill-border-radius="2"
+                      :show-indicator="false"
+                      :processing="true"
+                      :rail-color="'#2e2e42'"
+                    />
+                    <div v-if="k.strike_count > 0" class="text-[10px] text-warning mt-0.5">
+                      ⚠ {{ k.strike_count }} strike(s)
+                    </div>
                   </div>
                 </div>
               </div>
@@ -265,7 +263,7 @@ onUnmounted(() => {
           </div>
         </NCard>
 
-        <!-- Empty state -->
+        <!-- Global empty state -->
         <NEmpty v-if="!pools.length" description="No pools configured." />
       </template>
     </div>

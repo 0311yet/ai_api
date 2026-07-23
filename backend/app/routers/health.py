@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_session
 from app.models import Pool, PoolItem, Platform, PlatformKey
-from app.schemas import ProviderHealthItem, RateLimitWindow, PoolHealthOut, HealthOverview
+from app.schemas import KeyHealthItem, PoolItemHealthItem, RateLimitWindow, PoolHealthOut, HealthOverview
 from app.services import provider_health as ph
 
 router = APIRouter(prefix="/admin/health", tags=["health"])
@@ -51,16 +51,16 @@ async def health_overview(session: AsyncSession = Depends(get_session)):
         )
         rows = rows_result.all()
 
-        health_items = []  # 所有 (pool_item, platform_key) 的 health 条目
+        health_items = []  # 每行 = 一个 PoolItem × Platform 的组合
 
         for pool_item, platform in rows:
-            # 获取该 Platform 下所有 enabled 的 Keys
             enabled_keys = [k for k in platform.platform_keys if k.enabled and k.is_active]
             if not enabled_keys:
                 continue
 
+            # 为该 PoolItem 下的每个 Key 生成健康数据
+            key_health_list = []
             for key in enabled_keys:
-                # 获取该 key 的 health state
                 state = ph.get_platform_key_state(key.id)
                 if state is None:
                     state = ph.PlatformKeyHealthState(
@@ -71,38 +71,44 @@ async def health_overview(session: AsyncSession = Depends(get_session)):
                     ph.register_platform_key_state(state)
 
                 win = state.get_window(pool_item.model)
-                rate_window = RateLimitWindow(
-                    rpm=win.count(60),
-                    rpd=win.count(86400),
-                    tpm=win.tokens(60),
-                    tpd=win.tokens(86400),
-                )
                 cooldown_until = None
                 if state.cooldown_until and state.cooldown_until > time.time():
                     cooldown_until = datetime.fromtimestamp(
                         state.cooldown_until, tz=timezone.utc
                     ).isoformat()
 
-                health_items.append(ProviderHealthItem(
-                    provider_id=key.id,  # 复用 provider_id 字段（兼容前端）
-                    provider_name=f"{platform.name} / {key.label or str(key.id)}",
-                    base_url=platform.base_url,
-                    is_active=key.is_active,
+                key_health_list.append(KeyHealthItem(
                     platform_key_id=key.id,
                     key_label=key.label or str(key.id),
-                    model=pool_item.model or None,
-                    rate_window=rate_window,
+                    is_active=key.is_active,
+                    rate_window=RateLimitWindow(
+                        rpm=win.count(60),
+                        rpd=win.count(86400),
+                        tpm=win.tokens(60),
+                        tpd=win.tokens(86400),
+                    ),
                     cooldown_until=cooldown_until,
                     strike_count=state.strike_count,
                     penalty_score=state.penalty_score,
                     effective_priority=pool_item.priority - state.penalty_score,
                 ))
 
+            health_items.append(PoolItemHealthItem(
+                pool_item_id=pool_item.id,
+                platform_id=platform.id,
+                platform_name=platform.name,
+                base_url=platform.base_url,
+                model=pool_item.model,
+                priority=pool_item.priority,
+                is_active=pool_item.is_active,
+                available_keys=key_health_list,
+            ))
+
         out_pools.append(PoolHealthOut(
             pool_id=pool.id,
             pool_name=pool.name,
             strategy=pool.strategy,
-            providers=health_items,
+            items=health_items,
         ))
 
     return HealthOverview(

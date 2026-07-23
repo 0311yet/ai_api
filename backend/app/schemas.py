@@ -112,9 +112,7 @@ class PoolItemBase(BaseModel):
     priority: int = 1
     weight: int = 1
     is_active: bool = True
-    # 可选：指定具体的 PlatformKey（如果不指定，路由时会使用该 Platform 下所有 enabled 的 Keys）
-    platform_key_id: Optional[int] = None
-    key_label: str = ""
+    # 注意：不再在此指定 platform_key_id，路由时自动从 Platform 的 Keys 中选择
 
 
 class PoolItemCreate(PoolItemBase):
@@ -342,33 +340,37 @@ class RateLimitWindow(BaseModel):
     tpd: int = 0
 
 
-class ProviderHealthItem(BaseModel):
-    """单个 Provider 的健康状态（保留旧名，内部迁移到 PlatformKey）"""
-    provider_id: int
-    provider_name: str
-    base_url: str
-    is_active: bool
-    # 新增：platform_key_id 和 key_label
-    platform_key_id: Optional[int] = None
+class KeyHealthItem(BaseModel):
+    """单个 PlatformKey 的健康状态"""
+    platform_key_id: int
     key_label: str = ""
-    # 当前绑定的模型（来自 pool_item.model）
-    model: Optional[str] = None
-    # 滑动窗口（从 DB 实时查）
+    is_active: bool = True
+    # 滑动窗口
     rate_window: RateLimitWindow
-    # 冷却状态（无冷却则 cooldown_until 为空）
-    cooldown_until: Optional[str] = None  # ISO 字符串，无冷却时 null
+    # 冷却
+    cooldown_until: Optional[str] = None
     strike_count: int = 0
-    # 惩罚分
     penalty_score: int = 0
-    # 有效优先级（基础 - 惩罚分）
     effective_priority: int = 0
+
+
+class PoolItemHealthItem(BaseModel):
+    """单个 PoolItem 的健康状态（含该平台下所有 Keys）"""
+    pool_item_id: int
+    platform_id: int
+    platform_name: str
+    base_url: str
+    model: str
+    priority: int
+    is_active: bool
+    available_keys: List[KeyHealthItem] = Field(default_factory=list)
 
 
 class PoolHealthOut(BaseModel):
     pool_id: int
     pool_name: str
     strategy: str
-    providers: List[ProviderHealthItem]
+    items: List[PoolItemHealthItem] = Field(default_factory=list)
 
 
 class HealthOverview(BaseModel):
