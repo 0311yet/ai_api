@@ -2,6 +2,7 @@
 import { ref, onMounted, h, computed } from 'vue'
 import { NDataTable, NButton, NModal, NForm, NFormItem, NInput, NSelect, NSwitch, NTag, NInputNumber, useMessage } from 'naive-ui'
 import TopBar from '../components/TopBar.vue'
+import api from '../api'
 import { platformsAPI } from '../api'
 
 const message = useMessage()

@@ -2,7 +2,7 @@
 import { ref, onMounted, h } from 'vue'
 import {
   NButton, NModal, NForm, NFormItem, NInput, NSwitch, NTag,
-  NDataTable, NEmpty, NCollapse, NCollapseItem, useMessage,
+  NDataTable, NEmpty, useMessage,
 } from 'naive-ui'
 import TopBar from '../components/TopBar.vue'
 import { platformsAPI } from '../api'
@@ -29,74 +29,6 @@ const keyForm = ref({
   api_key: '',
   enabled: true,
 })
-
-const platformColumns = [
-  {
-    title: 'Name',
-    key: 'name',
-    render: (r: any) => h('span', { class: 'font-semibold text-sm text-text-primary' }, r.name),
-  },
-  {
-    title: 'Base URL',
-    key: 'base_url',
-    render: (r: any) => h('span', {
-      class: 'font-mono text-[12px] text-text-secondary truncate block max-w-[240px]',
-      title: r.base_url,
-    }, r.base_url),
-  },
-  {
-    title: 'Models',
-    key: 'models',
-    render: (r: any) => h(NTag, { size: 'small', round: true, type: 'info' }, {
-      default: () => `${r.models?.length || 0} models`,
-    }),
-  },
-  {
-    title: 'Paid',
-    key: 'is_paid',
-    render: (r: any) => h(NTag, r.is_paid
-      ? { type: 'warning', size: 'small', round: true }
-      : { type: 'default', size: 'small', round: true },
-    { default: () => r.is_paid ? 'Paid' : 'Free' }),
-  },
-  {
-    title: 'Status',
-    key: 'is_active',
-    render: (r: any) => h(NTag, r.is_active
-      ? { type: 'success', size: 'small', round: true }
-      : { type: 'warning', size: 'small', round: true },
-    { default: () => r.is_active ? 'Active' : 'Disabled' }),
-  },
-  {
-    title: 'Keys',
-    key: 'platform_keys',
-    render: (r: any) => h('span', {
-      class: 'inline-flex items-center justify-center min-w-[24px] h-6 px-1.5 font-mono text-[13px] text-text-primary bg-surface-bright rounded border border-border',
-    }, r.platform_keys?.length || 0),
-  },
-  {
-    title: 'Actions',
-    key: 'actions',
-    width: 200,
-    render: (r: any) => [
-      h(NButton, { size: 'tiny', type: 'primary', onClick: () => openAddKey(r) }, {
-        default: () => '+ Add Key',
-      }),
-      h(NButton, { size: 'tiny', onClick: () => openEditPlatform(r), style: { marginLeft: '6px' } }, {
-        default: () => 'Edit',
-      }),
-      h(NButton, {
-        size: 'tiny', onClick: () => togglePlatformActive(r),
-        style: { marginLeft: '6px', color: r.is_active ? '#D03050' : '#18A058' },
-      }, { default: () => r.is_active ? 'Disable' : 'Enable' }),
-      h(NButton, {
-        size: 'tiny', onClick: () => handleDeletePlatform(r.id),
-        style: { marginLeft: '6px' },
-        disabled: (r.platform_keys?.length || 0) > 0 || (r._pool_items_count > 0),
-      }, { default: () => 'Del' }),
-    ],
-  },
-]
 
 const keyColumns = [
   {
@@ -195,18 +127,6 @@ async function handleSavePlatform() {
   showPlatformModal.value = false
   load()
 }
-async function handleDeletePlatform(id: number) {
-  try {
-    await platformsAPI.delete(id)
-    load()
-  } catch (e: any) {
-    message.error('删除失败: ' + (e?.response?.data?.detail || e?.message || '未知错误'))
-  }
-}
-async function togglePlatformActive(r: any) {
-  await platformsAPI.update(r.id, { is_active: !r.is_active })
-  load()
-}
 
 // Key CRUD
 function openAddKey(platform: any) {
@@ -233,9 +153,9 @@ async function handleSaveKey() {
     enabled: keyForm.value.enabled,
   }
   if (editingKeyId.value) {
-    await platformsAPI.updateKey(currentPlatformId.value, editingKeyId.value, payload)
+    await platformsAPI.updateKey(currentPlatformId.value!, editingKeyId.value, payload)
   } else {
-    await platformsAPI.addKey(currentPlatformId.value, payload)
+    await platformsAPI.addKey(currentPlatformId.value!, payload)
   }
   showKeyModal.value = false
   load()
