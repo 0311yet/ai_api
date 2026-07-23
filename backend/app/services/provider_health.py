@@ -1,42 +1,49 @@
-"""Provider Health - 限流 / 冷却 / 惩罚路由 / Sticky Session
-
-核心概念：
-- SlidingWindow: 维护每分钟的请求数和 token 数的汇总（每分钟一条，1440 条 = 24h）
-- CooldownManager: Provider 冷却状态，429 时触发，指数增长冷却时间
-- PenaltyManager: 惩罚分，429 时 +3，每 2 分钟 -1
-- StickySessionManager: 多轮对话粘性，绑定 provider_id+model，TTL 30min
-- ProviderHealthService: 整合以上组件 + 启动后台任务（flusher / penalty_decay）
 """
-import asyncio
-import hashlib
-import time
-from collections import defaultdict, deque
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+Provider Health 模块：速率限制跟踪、冷却管理、惩罚评分、粘性会话
 
+重构说明 (v1.3):
+- 从 ProviderState → PlatformKeyHealthState (per-key tracking)
+- ProviderHealthManager → PlatformKeyHealthManager
+- 冷却和惩罚现在针对每个 PlatformKey 单独处理，而不是整个 Platform
+
+好处：
+- 同一 Platform 下多个 Keys 可以独立负载均衡和回退
+- 当一个 Key 被 429 时，只惩罚该 Key，不影响其他 Keys
+- 解决 NVIDIA NIM 全局限速导致的全部 Providers 变红问题
+"""
+from dataclasses import dataclass, field
+from collections import deque
+from typing import Dict, Optional
+import time
+from datetime import datetime, timezone, timedelta
+import asyncio
 from sqlalchemy import select, delete, func as sql_func, text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
 
 
-# ── 冷却升级时间表 ──────────────────────────────────────────────
-_COOLDOWN_LEVELS = [
-    timedelta(minutes=2),   # strike=1
-    timedelta(minutes=10),  # strike=2
-    timedelta(hours=1),     # strike=3
-    timedelta(hours=24),    # strike>=4
-]
-_MAX_STRIKE = len(_COOLDOWN_LEVELS)
+# ── 配置常量 ────────────────────────────────────────────────────────
+
+_MAX_STRIKE = 4
+_COOLDOWN_FOR_STRIKE = {
+    1: timedelta(minutes=2),
+    2: timedelta(minutes=10),
+    3: timedelta(hours=1),
+    4: timedelta(hours=24),
+}
+
+_FLUSH_INTERVAL = 5
+_CLEANUP_INTERVAL = 3600
+_PENALTY_DECAY_INTERVAL = 120
 
 
 def _cooldown_for_strike(strike: int) -> timedelta:
     idx = min(strike - 1, _MAX_STRIKE - 1)
-    return _COOLDOWN_LEVELS[idx]
+    return _COOLDOWN_FOR_STRIKE[strike]
 
 
 # ── 滑动窗口（每分钟一条汇总，节省内存）─────────────────────────
+
 @dataclass
 class MinuteBucket:
     ts: float           # 该分钟开始时间（unix）
@@ -50,9 +57,11 @@ class MinuteBucket:
 
 class SlidingWindow:
     """
-    维护一个 24h 的滑动窗口，每分钟一条汇总记录。
-    - rpm / tpm: 仅看过去 60s
-    - rpd / tpd: 全部 86400s
+    滑动窗口：用于 RPM/RPD/TPM/TPD 统计。
+
+    重要：_get_buckets_in_window() 是纯只读（不 pop）。
+    过期清理只在 add() 路径调用 _evict_expired()。
+    这样同一个 deque 可以同时服务 60s 和 24h 窗口查询，互不破坏。
     """
 
     MAX_BUCKETS = 8640   # 留点余量
@@ -84,20 +93,13 @@ class SlidingWindow:
             self._buckets.append(MinuteBucket(ts=now, request_count=1, token_count=token_count))
 
     def _get_buckets_in_window(self, window_seconds: float) -> list:
-        """返回窗口内所有 bucket（只读，不修改 deque）。
-
-        注意：必须保持非破坏性语义。同一个 SlidingWindow 对象的 deque 会被
-        count(60) 和 count(86400) 先后调用——如果 count(60) 先 popleft 所有
-        超过 60s 的 buckets，count(86400) 之后就会看到空 deque，永远返回 0。
-        所以这里不 pop 过期数据，过期清理交给 add() 在写入时懒执行。
-        """
+        """返回窗口内所有 bucket（只读，不修改 deque）。"""
         cutoff = time.time() - window_seconds
         # 过滤而非 popleft，保持非破坏性
         return [b for b in self._buckets if b.ts >= cutoff]
 
     def _evict_expired(self, max_age_seconds: float = 86400) -> None:
-        """真正 popleft 删除超过 max_age 的 bucket，由 add() 在写入路径调用。
-        这样过期清理只在写入时发生，不会污染只读的 count/tokens 调用。"""
+        """真正 popleft 删除超过 max_age 的 bucket，由 add() 在写入路径调用。"""
         cutoff = time.time() - max_age_seconds
         while self._buckets and self._buckets[0].ts < cutoff:
             self._buckets.popleft()
@@ -115,35 +117,31 @@ class SlidingWindow:
         }
 
     @classmethod
-    def from_snapshot(cls, data: dict) -> "SlidingWindow":
+    def from_snapshot(cls, snapshot: dict) -> "SlidingWindow":
+        """从 DB 恢复"""
         sw = cls()
-        if data:
-            for ts, rc, tc in data.get("buckets", []):
-                sw._buckets.append(MinuteBucket(ts=float(ts), request_count=rc, token_count=tc))
+        for ts, req_count, tok_count in snapshot.get("buckets", []):
+            sw._buckets.append(MinuteBucket(ts=ts, request_count=req_count, token_count=tok_count))
         return sw
 
 
-# ── Provider Health State（内存状态）────────────────────────────
+# ── PlatformKeyHealthState（单个 Key 的健康状态）──────────────────────
+
 @dataclass
-class ProviderState:
-    """单个 Provider 的全部健康状态"""
-    provider_id: int
-    provider_name: str
-    base_url: str
-    is_active: bool
-    base_priority: int = 0            # 从 pool_item.priority 来的基础优先级
-    penalty_score: int = 0            # 惩罚分，0-10
-    last_decay: float = field(default_factory=time.time)
-
-    # 滑动窗口：key=(model or "")
-    windows: Dict[str, SlidingWindow] = field(default_factory=dict)
-
-    # 冷却
+class PlatformKeyHealthState:
+    """单个 PlatformKey 的健康状态（替代旧 ProviderState）"""
+    platform_key_id: int
+    platform_id: int
+    key_label: str
     cooldown_until: Optional[float] = None  # unix timestamp，无冷却时 None
     strike_count: int = 0
-
+    penalty_score: int = 0
+    last_decay: float = field(default_factory=time.time)
     # Sticky Session 绑定
     sticky_model: Optional[str] = None
+
+    # model -> SlidingWindow（每个上游模型一个窗口）
+    windows: Dict[str, SlidingWindow] = field(default_factory=dict)
 
     def get_window(self, model: str = "") -> SlidingWindow:
         if model not in self.windows:
@@ -157,25 +155,16 @@ class ProviderState:
 
     def cooldown_remaining(self) -> float:
         if self.cooldown_until is None:
-            return 0.0
+            return 0
         rem = self.cooldown_until - time.time()
-        return max(0.0, rem)
+        return max(0, rem)
 
-    def is_usable(self, model: str = "") -> Tuple[bool, str]:
-        """
-        判断 Provider 是否可用，返回 (可用, 原因)
-        """
-        if not self.is_active:
-            return False, "provider_inactive"
-        if self.is_in_cooldown():
-            return False, f"cooldown_{int(self.cooldown_remaining())}s"
-        win = self.get_window(model)
-        # 4 维度检查（宽松阈值，上游 API key 的限流由上游侧控制，这里网关侧做辅助提示）
-        # 这里先不做硬限流（避免误杀），只用于管理员展示
-        return True, "ok"
-
-    def effective_priority(self) -> int:
-        return self.base_priority - self.penalty_score
+    def can_serve(self, model: str = "") -> tuple[bool, str]:
+        """检查该 key 是否可用于服务请求。返回 (can_serve, reason)。"""
+        if not self.is_in_cooldown():
+            return True, ""
+        remain = int(self.cooldown_remaining())
+        return False, f"cooldown_{remain}s"
 
     def record_429(self, reason: str = "rate_limited"):
         """收到 429：加惩罚分 + 升级冷却"""
@@ -197,11 +186,61 @@ class ProviderState:
             self.last_decay = time.time()
         return self.penalty_score > 0
 
+    def effective_priority(self, base_priority: int) -> int:
+        """有效优先级 = 基础优先级 - 惩罚分"""
+        return base_priority - self.penalty_score
+
+
+# ── 全局单例 ─────────────────────────────────────────────────────
+
+_PLATFORM_KEY_STATE: Dict[int, PlatformKeyHealthState] = {}  # platform_key_id -> state
+_BACKGROUND_TASKS: list = []
+_EVENT_BUFFER: Dict[tuple[int, str], dict] = {}  # (platform_key_id, model) -> {request, token, ts}
+_EVENT_BUFFER_LOCK = None
+
+
+def register_platform_key_state(state: PlatformKeyHealthState) -> None:
+    """注册一个 PlatformKey 状态"""
+    _PLATFORM_KEY_STATE[state.platform_key_id] = state
+
+
+def get_platform_key_state(platform_key_id: int) -> Optional[PlatformKeyHealthState]:
+    """获取 PlatformKey 状态（不存在返回 None）"""
+    return _PLATFORM_KEY_STATE.get(platform_key_id)
+
+
+def get_all_platform_key_states() -> Dict[int, PlatformKeyHealthState]:
+    """获取所有 PlatformKey 状态"""
+    return _PLATFORM_KEY_STATE.copy()
+
+
+def clear_platform_key_states() -> None:
+    """清空所有状态（测试用）"""
+    _PLATFORM_KEY_STATE.clear()
+
+
+# ── 异步 API（兼容旧接口名称，但内部实现变为 PlatformKey）──────────────
+
+# 为了向后兼容，保留旧接口名称（实际使用新实现）
+ProviderState = PlatformKeyHealthState
+_PROVIDER_STATE = _PLATFORM_KEY_STATE  # 别名
+
+def register_provider(state: PlatformKeyHealthState) -> None:
+    """旧接口（兼容）"""
+    register_platform_key_state(state)
+
+def get_provider_state(provider_id: int) -> Optional[PlatformKeyHealthState]:
+    """旧接口（兼容）- 按旧 provider_id 查找（已废弃）"""
+    # 迁移期兼容：provider_id → platform_key_id 查找
+    # TODO: 迁移完成后删除
+    return None
+
 
 # ── Sticky Session Manager ───────────────────────────────────────
+
 @dataclass
 class StickyEntry:
-    provider_id: int
+    platform_key_id: int
     model: str
     created_at: float
     expires_at: float    # now + 30min
@@ -211,131 +250,119 @@ class StickyEntry:
 
 
 class StickySessionManager:
-    TTL_SECONDS = 30 * 60   # 30 分钟
+    """粘性会话管理：会话首次命中某个 key 后，后续相同会话继续使用该 key"""
 
     def __init__(self):
-        self._sessions: Dict[str, StickyEntry] = {}
+        self.sessions: Dict[str, StickyEntry] = {}
 
     @staticmethod
     def make_key(ip: str, first_user_message: str) -> str:
-        content = f"{ip}|{hashlib.sha1(first_user_message.encode()).hexdigest()[:16]}"
-        return hashlib.sha1(content.encode()).hexdigest()[:32]
+        """生成会话 key（简单版）"""
+        return f"{ip}:{hash(first_user_message) % 1000000}"
 
-    def bind(self, key: str, provider_id: int, model: str):
+    def bind(self, session_key: str, platform_key_id: int, model: str, ttl_seconds: int = 1800) -> None:
         now = time.time()
-        self._sessions[key] = StickyEntry(
-            provider_id=provider_id,
+        entry = StickyEntry(
+            platform_key_id=platform_key_id,
             model=model,
             created_at=now,
-            expires_at=now + self.TTL_SECONDS,
+            expires_at=now + ttl_seconds,
         )
+        self.sessions[session_key] = entry
 
-    def resolve(self, key: str, valid_provider_ids: set[int]) -> Optional[Tuple[int, str]]:
-        """解析 sticky key，返回 (provider_id, model) 或 None"""
-        entry = self._sessions.get(key)
-        if not entry or not entry.valid():
-            self._sessions.pop(key, None)
-            return None
-        if entry.provider_id not in valid_provider_ids:
-            # provider 不可用，清除粘性
-            self._sessions.pop(key, None)
-            return None
-        return entry.provider_id, entry.model
+        # 同时更新 state.sticky_model
+        state = get_platform_key_state(platform_key_id)
+        if state:
+            state.sticky_model = model
 
-    def prune(self):
-        """清理过期 session"""
+    def get(self, session_key: str) -> Optional[StickyEntry]:
+        entry = self.sessions.get(session_key)
+        if entry and entry.valid():
+            return entry
+        # 清理过期会话
+        if entry:
+            del self.sessions[session_key]
+        return None
+
+    def unbind(self, session_key: str) -> None:
+        if session_key in self.sessions:
+            del self.sessions[session_key]
+
+    def prune(self) -> int:
+        """清理过期会话，返回清理数量"""
         now = time.time()
-        self._sessions = {k: v for k, v in self._sessions.items() if v.expires_at > now}
+        expired = [k for k, v in self.sessions.items() if v.expires_at < now]
+        for k in expired:
+            del self.sessions[k]
+        return len(expired)
 
     def count(self) -> int:
-        return len(self._sessions)
+        """当前活跃会话数"""
+        now = time.time()
+        return sum(1 for v in self.sessions.values() if v.expires_at > now)
 
 
-# ── Main Service ─────────────────────────────────────────────────
-_PROVIDER_STATE: Dict[int, ProviderState] = {}
-_PENALTY_DECAY_INTERVAL = 120   # 2 分钟
-_FLUSH_INTERVAL = 5             # 5 秒
-_CLEANUP_INTERVAL = 3600       # 1 小时
-_BACKGROUND_TASKS: List[asyncio.Task] = []
+StickySessionManager_instance = StickySessionManager()
 
 
-def get_provider_state(provider_id: int) -> Optional[ProviderState]:
-    return _PROVIDER_STATE.get(provider_id)
+# ── 限流事件记录（批量异步写入）──────────────────────────────────────
 
-
-def register_provider(state: ProviderState):
-    _PROVIDER_STATE[state.provider_id] = state
-
-
-def clear_providers():
-    _PROVIDER_STATE.clear()
-
-
-def get_all_states() -> Dict[int, ProviderState]:
-    return dict(_PROVIDER_STATE)
-
-
-# ── 限流事件缓冲（批量写入）────────────────────────────────────
-_event_buffer: Dict[Tuple[int, str], dict] = {}   # (provider_id, model) → {"request": N, "token": N}
-_EVENT_BUFFER_LOCK = asyncio.Lock()
-
-
-async def record_request(provider_id: int, model: str, tokens: int = 0):
+async def record_request(platform_key_id: int, model: str, tokens: int = 0):
     """记录一次请求（异步批量，不阻塞）"""
+    global _EVENT_BUFFER_LOCK
+    if _EVENT_BUFFER_LOCK is None:
+        _EVENT_BUFFER_LOCK = asyncio.Lock()
+
     async with _EVENT_BUFFER_LOCK:
-        key = (provider_id, model)
-        if key not in _event_buffer:
-            _event_buffer[key] = {"request": 0, "token": 0, "ts": time.time()}
-        _event_buffer[key]["request"] += 1
-        _event_buffer[key]["token"] += tokens
-        _event_buffer[key]["ts"] = time.time()
+        key = (platform_key_id, model)
+        if key not in _EVENT_BUFFER:
+            _EVENT_BUFFER[key] = {"request": 0, "token": 0, "ts": time.time()}
+        _EVENT_BUFFER[key]["request"] += 1
+        _EVENT_BUFFER[key]["token"] += tokens
+        _EVENT_BUFFER[key]["ts"] = time.time()
 
     # 更新内存滑动窗口
-    if provider_id in _PROVIDER_STATE:
-        sw = _PROVIDER_STATE[provider_id].get_window(model)
+    if platform_key_id in _PLATFORM_KEY_STATE:
+        sw = _PLATFORM_KEY_STATE[platform_key_id].get_window(model)
         sw.add(tokens)
 
 
 async def _flush_events_to_db():
     """每 5 秒把缓冲区刷入 SQLite"""
+    from app.models import RateLimitEvent
+    from datetime import datetime, timezone
+
+    global _EVENT_BUFFER_LOCK
     async with _EVENT_BUFFER_LOCK:
-        if not _event_buffer:
+        if not _EVENT_BUFFER:
             return
-        events = dict(_event_buffer)
-        _event_buffer.clear()
+        events = dict(_EVENT_BUFFER)
+        _EVENT_BUFFER.clear()
 
     async with async_session() as s:
-        from app.models import RateLimitEvent
-        now = datetime.now(timezone.utc)
-        records = [
-            RateLimitEvent(
-                provider_id=pid,
-                model=mid,
-                event_type="request",
-                event_value=ev["request"],
-                created_at=now,
-            )
-            for (pid, mid), ev in events.items()
-            if ev.get("request", 0) > 0
-        ]
-        token_records = [
-            RateLimitEvent(
-                provider_id=pid,
-                model=mid,
-                event_type="token",
-                event_value=ev["token"],
-                created_at=now,
-            )
-            for (pid, mid), ev in events.items()
-            if ev.get("token", 0) > 0
-        ]
-        if records or token_records:
-            s.add_all(records + token_records)
-            await s.commit()
+        for (platform_key_id, model), data in events.items():
+            # 记录请求事件
+            if data["request"] > 0:
+                s.add(RateLimitEvent(
+                    platform_key_id=platform_key_id,
+                    model=model,
+                    event_type="request",
+                    event_value=data["request"],
+                ))
+            # 记录 token 事件
+            if data["token"] > 0:
+                s.add(RateLimitEvent(
+                    platform_key_id=platform_key_id,
+                    model=model,
+                    event_type="token",
+                    event_value=data["token"],
+                ))
+        await s.commit()
 
 
 async def _cleanup_old_events():
     """每小时清理 48h 前的限流记录"""
+    from app.models import RateLimitEvent
     async with async_session() as s:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
         await s.execute(
@@ -344,78 +371,52 @@ async def _cleanup_old_events():
         await s.commit()
 
 
-async def _decay_penalties():
-    """每 2 分钟，所有 Provider 惩罚分 -1"""
-    for state in _PROVIDER_STATE.values():
-        state.decay_penalty()
-
+# ── 启动时恢复 ─────────────────────────────────────────────────────
 
 async def _restore_cooldowns():
-    """启动时从 DB 恢复未过期的冷却"""
-    from app.models import ProviderCooldown
+    """启动时从 DB 恢复未过期的冷却（针对 PlatformKey）"""
+    from app.models import PlatformKeyCooldown
+    from app.models import PlatformKey
+    from app.models import Platform
+
     async with async_session() as s:
         result = await s.execute(
-            select(ProviderCooldown).where(
-                ProviderCooldown.cooldown_until > datetime.now(timezone.utc)
+            select(
+                PlatformKeyCooldown.platform_key_id,
+                PlatformKeyCooldown.cooldown_until,
+                PlatformKeyCooldown.strike_count,
+                PlatformKeyCooldown.reason,
+                PlatformKey.api_key,
+                PlatformKey.platform_id,
+                Platform.name,
             )
+            .join(PlatformKey, PlatformKeyCooldown.platform_key_id == PlatformKey.id)
+            .join(Platform, PlatformKey.platform_id == Platform.id)
+            .where(PlatformKeyCooldown.cooldown_until > datetime.now(timezone.utc))
         )
-        for row in result.scalars().all():
-            if row.provider_id in _PROVIDER_STATE:
-                st = _PROVIDER_STATE[row.provider_id]
-                st.cooldown_until = row.cooldown_until.timestamp()
-                st.strike_count = row.strike_count
-
-
-async def _register_all_providers():
-    """启动时预注册所有 Provider + 活跃 PoolItem 到 _PROVIDER_STATE。
-
-    这样 _restore_windows 才能把 DB 中的历史事件填进对应 Provider 的滑动窗口。
-    （运行时是懒注册的，但那已经在请求进来了才发生，错过了启动时的批量恢复。）
-    """
-    from app.models import Provider, PoolItem, Pool
-    async with async_session() as s:
-        # 查所有 Provider 及其活跃 PoolItem（含 priority）
-        rows = (await s.execute(
-            select(Provider, PoolItem, Pool)
-            .join(PoolItem, PoolItem.provider_id == Provider.id)
-            .join(Pool, PoolItem.pool_id == Pool.id)
-            .where(PoolItem.is_active == True, Provider.is_active == True)
-            .order_by(Provider.id, PoolItem.priority)
-        )).all()
-        for provider, pool_item, pool in rows:
-            if provider.id not in _PROVIDER_STATE:
-                _PROVIDER_STATE[provider.id] = ProviderState(
-                    provider_id=provider.id,
-                    provider_name=provider.name,
-                    base_url=provider.base_url,
-                    is_active=provider.is_active,
-                    base_priority=pool_item.priority,
-                )
-            else:
-                # 已存在的 state 保留运行时累积的状态（不覆盖）
-                pass
+        for row in result:
+            pk_id, cooldown_until, strike_count, reason, api_key, platform_id, platform_name = row
+            state = PlatformKeyHealthState(
+                platform_key_id=pk_id,
+                platform_id=platform_id,
+                key_label=f"Key {pk_id}",
+                cooldown_until=cooldown_until.timestamp(),
+                strike_count=strike_count,
+            )
+            register_platform_key_state(state)
 
 
 async def _restore_windows():
-    """启动时从 rate_limit_events 表回放最近 24h 事件，重填各 Provider 的滑动窗口。
-
-    保证容器重启后 RPD/TPD 不会归零。每分钟聚合成一个 bucket（与运行时行为一致），
-    bucket 时间戳 = 该分钟内首条事件的时间。
-
-    Model key 处理（兼容旧数据）：
-    - 新事件（当前代码）：model = PoolItem.model（上游模型名，如 'z-ai/glm-5.2'）
-    - 旧事件（历史数据）：model = 客户端请求 model（如 'auto'），
-      通过 JOIN pool_items WHERE provider_id=pid 来反向查找对应上游 model。
-      若查不到则跳过（无效数据，不影响当前状态）。
-    """
+    """启动时从 DB 恢复最近 24h 的滑动窗口（针对 PlatformKey）"""
     from app.models import RateLimitEvent
-    from sqlalchemy import select
+    from app.models import Platform, PlatformKey
+
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=86400)
     async with async_session() as s:
-        # 查询最近 24h 事件，含 pool_item_id 让 JOIN 匹配
+        # 查询最近 24h 事件
         result = await s.execute(
             select(
-                RateLimitEvent.provider_id,
+                RateLimitEvent.platform_key_id,
                 RateLimitEvent.model,
                 RateLimitEvent.event_type,
                 RateLimitEvent.event_value,
@@ -423,48 +424,17 @@ async def _restore_windows():
             ).where(RateLimitEvent.created_at >= cutoff)
         )
 
-        # 先构建 (provider_id, upstream_model) 的映射表
-        # 从 pool_items 表查各 provider 的活跃条目，取 priority 最小（最高优先级）的那个 model
-        # 这样 provider_to_upstream[pid] 精确对应 health_overview 中 primary PoolItem 的 model
-        provider_to_upstream: dict[int, str] = {}
-        from app.models import Provider, PoolItem
-        pi_rows = (await s.execute(
-            select(Provider.id, PoolItem.model)
-            .join(Provider, PoolItem.provider_id == Provider.id)
-            .where(PoolItem.is_active == True)
-            .order_by(Provider.id, PoolItem.priority)
-        )).all()
-        for pid, upstream_model in pi_rows:
-            # 每个 provider 只取 priority 最小的那个（最高优先级）
-            if pid not in provider_to_upstream:
-                provider_to_upstream[pid] = upstream_model or ""
-
-        # 聚合事件：{(provider_id, upstream_model): {minute_ts: [first_ts, req_sum, tok_sum]}}
-        agg: dict[tuple[int, str], dict[int, list]] = {}
-        for pid, model, evtype, value, created in result.all():
-            if pid not in _PROVIDER_STATE:
+        # 按 (platform_key_id, model) 聚合事件
+        agg: Dict[tuple[int, str], dict[int, list]] = {}
+        for pk_id, model, evtype, value, created in result.all():
+            if pk_id not in _PLATFORM_KEY_STATE:
                 continue
-            if created is None:
-                continue
-
-            # 解析时间
             cts = created
             if cts.tzinfo is None:
                 cts = cts.replace(tzinfo=timezone.utc)
             ts = cts.timestamp()
             minute_ts = int(ts // 60) * 60
-
-            # 转换为上游 model 名
-            upstream = provider_to_upstream.get(pid, "")
-            # 如果 DB 里的 model 就是上游 model 名（当前代码行为）直接用它
-            # 如果 DB 里是客户端 model（如 'auto'），用 upstream
-            # 判断策略：DB model 是 PoolItem.model 里的值吗？
-            # 保守做法：直接用 upstream（最可靠，唯一对应 provider）
-            model_key = upstream or model or ""
-            if not model_key:
-                continue
-
-            key = (pid, model_key)
+            key = (pk_id, model)
             bucket_map = agg.setdefault(key, {})
             entry = bucket_map.setdefault(minute_ts, [ts, 0, 0])
             entry[0] = min(entry[0], ts)
@@ -473,14 +443,14 @@ async def _restore_windows():
             elif evtype == "token":
                 entry[2] += int(value or 0)
 
-        # 填充到各 Provider 的 SlidingWindow
+        # 填充到各 PlatformKeyHealthState 的 SlidingWindow
         total_providers = 0
         total_buckets = 0
-        for (pid, model_key), bucket_map in agg.items():
-            if pid not in _PROVIDER_STATE:
+        for (pk_id, model_key), bucket_map in agg.items():
+            if pk_id not in _PLATFORM_KEY_STATE:
                 continue
             total_providers += 1
-            sw = _PROVIDER_STATE[pid].get_window(model_key)
+            sw = _PLATFORM_KEY_STATE[pk_id].get_window(model_key)
             for minute_ts in sorted(bucket_map.keys()):
                 first_ts, req_sum, tok_sum = bucket_map[minute_ts]
                 sw._buckets.append(MinuteBucket(
@@ -490,29 +460,37 @@ async def _restore_windows():
                 ))
                 total_buckets += 1
 
-        print(f"[health] restored sliding windows: {total_providers} providers, {total_buckets} minute-buckets")
+        print(f"[health] restored sliding windows: {total_providers} platform_keys, {total_buckets} minute-buckets")
 
 
 async def _persist_cooldowns():
     """定期把内存冷却状态写回 DB"""
-    from app.models import ProviderCooldown
+    from app.models import PlatformKeyCooldown
+    from datetime import datetime, timezone
+
     async with async_session() as s:
-        now = datetime.now(timezone.utc)
-        for state in _PROVIDER_STATE.values():
-            if state.cooldown_until is not None and state.cooldown_until > time.time():
-                # 更新或插入
-                row = await s.get(ProviderCooldown, state.provider_id)
+        for pk_id, state in _PLATFORM_KEY_STATE.items():
+            if state.cooldown_until is None or state.cooldown_until <= time.time():
+                # 已过期，删除 DB 记录
+                await s.execute(
+                    delete(PlatformKeyCooldown).where(PlatformKeyCooldown.platform_key_id == pk_id)
+                )
+            else:
+                # 保存冷却状态
+                existing = await s.execute(
+                    select(PlatformKeyCooldown).where(PlatformKeyCooldown.platform_key_id == pk_id)
+                )
+                row = existing.scalar_one_or_none()
+                cooldown_until = datetime.fromtimestamp(state.cooldown_until, tz=timezone.utc)
                 if row:
-                    row.cooldown_until = datetime.fromtimestamp(state.cooldown_until, tz=timezone.utc)
+                    row.cooldown_until = cooldown_until
                     row.strike_count = state.strike_count
-                    row.updated_at = now
                 else:
-                    s.add(ProviderCooldown(
-                        provider_id=state.provider_id,
-                        cooldown_until=datetime.fromtimestamp(state.cooldown_until, tz=timezone.utc),
+                    s.add(PlatformKeyCooldown(
+                        platform_key_id=pk_id,
+                        cooldown_until=cooldown_until,
                         strike_count=state.strike_count,
                         reason="rate_limit",
-                        updated_at=now,
                     ))
         await s.commit()
 
@@ -528,11 +506,17 @@ async def _bg_flusher():
 
 async def _bg_cooldown_persister():
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(_FLUSH_INTERVAL * 2)  # 10s
         try:
             await _persist_cooldowns()
         except Exception:
             pass
+
+
+async def _decay_penalties():
+    """每 2 分钟，所有 PlatformKey 惩罚分 -1"""
+    for state in _PLATFORM_KEY_STATE.values():
+        state.decay_penalty()
 
 
 async def _bg_penalty_decay():
@@ -554,14 +538,15 @@ async def _bg_cleanup():
             pass
 
 
-# ── 全局单例 ─────────────────────────────────────────────────────
-StickySessionManager_instance = StickySessionManager()
-
-
 async def start_health_tasks():
     """启动所有后台任务（在 FastAPI lifespan startup 时调用）"""
-    # 预注册所有 Provider + 活跃 PoolItem 的 state，让后续 _restore_windows 能找到 PID
-    await _register_all_providers()
+    global _EVENT_BUFFER_LOCK
+    if _EVENT_BUFFER_LOCK is None:
+        _EVENT_BUFFER_LOCK = asyncio.Lock()
+
+    # 预注册所有 PlatformKeys + 活跃 PoolItem 的 state（TODO: 实现 _register_all_platform_keys）
+    # 暂时先空实现，等待 pool_router.py 更新后调用注册
+
     await _restore_cooldowns()
     await _restore_windows()
     _BACKGROUND_TASKS.extend([
@@ -578,7 +563,6 @@ async def stop_health_tasks():
         t.cancel()
     await asyncio.gather(*_BACKGROUND_TASKS, return_exceptions=True)
     _BACKGROUND_TASKS.clear()
-    # shutdown 前 flush 最后一次
     try:
         await _flush_events_to_db()
         await _persist_cooldowns()
