@@ -25,26 +25,29 @@ router = APIRouter(
 
 # ── Platform CRUD ──────────────────────────────────────────────
 
-@router.get("", response_model=list[PlatformOut])
+@router.get("")
 async def list_platforms(session: AsyncSession = Depends(get_session)):
     """列出所有 Platforms（含 Keys）"""
     q = select(Platform).options(selectinload(Platform.platform_keys)).order_by(Platform.name)
     result = await session.execute(q)
     platforms = result.scalars().all()
     
-    # 手动构造 PlatformOut 以包含 platform_keys
+    # 手动构造，绕过 Pydantic from_attributes 无法读取 relationship 的问题
     return [
-        PlatformOut(
-            id=p.id,
-            name=p.name,
-            base_url=p.base_url,
-            models=p.models,
-            is_paid=p.is_paid,
-            is_active=p.is_active,
-            created_at=p.created_at,
-            updated_at=p.updated_at,
-            platform_keys=[PlatformKeyOut.model_validate(k) for k in p.platform_keys],
-        )
+        {
+            "id": p.id,
+            "name": p.name,
+            "base_url": p.base_url,
+            "models": p.models,
+            "is_paid": p.is_paid,
+            "is_active": p.is_active,
+            "created_at": str(p.created_at) if p.created_at else None,
+            "updated_at": str(p.updated_at) if p.updated_at else None,
+            "platform_keys": [
+                PlatformKeyOut.model_validate(k).model_dump()
+                for k in p.platform_keys
+            ],
+        }
         for p in platforms
     ]
 
