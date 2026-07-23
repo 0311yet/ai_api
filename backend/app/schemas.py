@@ -112,6 +112,9 @@ class PoolItemBase(BaseModel):
     priority: int = 1
     weight: int = 1
     is_active: bool = True
+    # 可选：指定具体的 PlatformKey（如果不指定，路由时会使用该 Platform 下所有 enabled 的 Keys）
+    platform_key_id: Optional[int] = None
+    key_label: str = ""
 
 
 class PoolItemCreate(PoolItemBase):

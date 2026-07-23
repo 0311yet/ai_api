@@ -107,6 +107,10 @@ class PoolItem(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
+    # 可选：指定具体的 PlatformKey
+    platform_key_id: Mapped[Optional[int]] = mapped_column(ForeignKey("platform_keys.id", ondelete="SET NULL"), nullable=True)
+    key_label: Mapped[str] = mapped_column(String(50), default="")  # 用于显示的 key label
+
     # 保留 provider_id 字段用于向后兼容（迁移期）
     provider_id: Mapped[Optional[int]] = mapped_column(ForeignKey("providers.id", ondelete="SET NULL"), nullable=True)
 
@@ -148,14 +152,14 @@ class RequestLog(Base):
     # 新增：指向 PlatformKey
     platform_key_id: Mapped[Optional[int]] = mapped_column(ForeignKey("platform_keys.id", ondelete="SET NULL"), nullable=True)
 
-    model: Mapped[str] = mapped_column(String(100), nullable=False)  # 客户端请求的 model（= pool.name）
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
     request_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    status: Mapped[str] = mapped_column(String(20), nullable=False)  # pending/success/failed
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
     latency_ms: Mapped[float] = mapped_column(Float, default=0)
-    ttft_ms: Mapped[float] = mapped_column(Float, default=0)  # Time To First Token
+    ttft_ms: Mapped[float] = mapped_column(Float, default=0)
     error_message: Mapped[str] = mapped_column(Text, default="")
     ip_address: Mapped[str] = mapped_column(String(50), default="")
     user_agent: Mapped[str] = mapped_column(String(200), default="")

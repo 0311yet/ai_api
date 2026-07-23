@@ -14,6 +14,8 @@ interface ProviderHealth {
   provider_name: string
   base_url: string
   is_active: boolean
+  platform_key_id: number
+  key_label: string
   rate_window: { rpm: number; rpd: number; tpm: number; tpd: number }
   cooldown_until: string | null
   strike_count: number
@@ -174,6 +176,7 @@ onUnmounted(() => {
                 <div class="flex-1 min-w-0">
                   <div class="flex items-center gap-1.5">
                     <span class="font-mono text-[11px] text-text-secondary">#{{ p.provider_id }}</span>
+                    <NTag size="tiny" type="info" round>key-{{ p.key_label }}</NTag>
                     <NTag size="tiny" :type="getStatus(p).type" round>{{ getStatus(p).label }}</NTag>
                   </div>
                   <div class="font-semibold text-sm text-text-primary mt-1 truncate" :title="p.provider_name">

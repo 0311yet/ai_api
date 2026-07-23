@@ -10,6 +10,19 @@ export const healthAPI = {
   rateLimit: (providerId: number) => api.get(`/admin/health/rate-limit/${providerId}`),
 }
 
+// ── platforms API ──
+export const platformsAPI = {
+  list: () => api.get('/admin/platforms'),
+  get: (id: number) => api.get(`/admin/platforms/${id}`),
+  create: (data: any) => api.post('/admin/platforms', data),
+  update: (id: number, data: any) => api.put(`/admin/platforms/${id}`, data),
+  delete: (id: number) => api.delete(`/admin/platforms/${id}`),
+  listKeys: (platformId: number) => api.get(`/admin/platforms/${platformId}/keys`),
+  addKey: (platformId: number, data: any) => api.post(`/admin/platforms/${platformId}/keys`, data),
+  updateKey: (platformId: number, keyId: number, data: any) => api.put(`/admin/platforms/${platformId}/keys/${keyId}`, data),
+  deleteKey: (platformId: number, keyId: number) => api.delete(`/admin/platforms/${platformId}/keys/${keyId}`),
+}
+
 const api: AxiosInstance = axios.create({
   // 开发时指向本地后端；生产用相对路径（同源）
   baseURL: import.meta.env.VITE_API_BASE || '',

@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { ref, onMounted, h } from 'vue'
+import { ref, onMounted, h, computed } from 'vue'
 import { NDataTable, NButton, NModal, NForm, NFormItem, NInput, NSelect, NSwitch, NTag, NInputNumber, useMessage } from 'naive-ui'
 import TopBar from '../components/TopBar.vue'
-import api from '../api'
+import { platformsAPI } from '../api'
 
 const message = useMessage()
 const loading = ref(false)
 const rows = ref<any[]>([])
-const providers = ref<any[]>([])
+const platforms = ref<any[]>([])  // 新架构: Platforms
 const showPoolModal = ref(false)
 const showConfigModal = ref(false)
 const editingPoolId = ref<number | null>(null)
@@ -29,7 +29,16 @@ const strategyTag: Record<string, { color: string; icon: string }> = {
 // Config Modal state
 const configItems = ref<any[]>([])
 const showAddItemModal = ref(false)
-const itemForm = ref({ provider_id: null as number | null, model: '', priority: 1, weight: 1, is_active: true })
+const itemForm = ref({ platform_id: null as number | null, key_label: null as string | null, model: '', priority: 1, weight: 1, is_active: true })
+
+// Computed: keys for the currently selected platform
+const selectedPlatformKeys = computed(() => {
+  const platform = platforms.value.find((p: any) => p.id === itemForm.value.platform_id)
+  if (!platform) return []
+  return (platform.platform_keys || [])
+    .filter((k: any) => k.enabled && k.is_active)
+    .map((k: any) => ({ label: `key-${k.label}`, value: k.label }))
+})
 
 const poolColumns = [
   { title: 'Pool ID', key: 'name', width: 130,
@@ -69,8 +78,11 @@ const itemColumns = [
     render: (_: any, i: number) => h('span', {
       class: 'inline-flex items-center justify-center w-6 h-6 font-mono text-[13px] bg-surface-container border border-border rounded'
     }, i + 1) },
-  { title: 'Provider', key: 'provider_name',
-    render: (r: any) => h('span', { class: 'text-sm' }, r.provider_name || `Provider #${r.provider_id}`) },
+  { title: 'Platform', key: 'platform_name',
+    render: (r: any) => h('div', { class: 'flex items-center gap-1.5' }, [
+      h('span', { class: 'font-semibold text-sm text-text-primary' }, r.platform_name || `Platform #${r.platform_id}`),
+      r.key_label ? h(NTag, { size: 'tiny', round: true, type: 'info' }, { default: () => `key-${r.key_label}` }) : null,
+    ].filter(Boolean)) },
   { title: 'Model Name', key: 'model', render: (r: any) => h('span', { class: 'font-mono text-[13px] text-text-secondary' }, r.model) },
   { title: 'Weight', key: 'weight', width: 80, align: 'center' as const,
     render: (r: any) => h('span', { class: 'font-mono text-[13px]' }, r.weight) },
@@ -85,9 +97,14 @@ const itemColumns = [
 async function load() {
   loading.value = true
   try {
-    const [poolsRes, provRes] = await Promise.all([api.get('/admin/pools'), api.get('/admin/providers')])
+    const poolsRes = await api.get('/admin/pools')
     rows.value = poolsRes.data
-    providers.value = provRes.data
+    platforms.value = (await platformsAPI.list()).data
+    // Also fetch detail to get platform_keys for each platform
+    await Promise.all(platforms.value.map(async (p: any) => {
+      const detail = (await platformsAPI.get(p.id)).data
+      p.platform_keys = detail.platform_keys || []
+    }))
   } catch (e: any) { message.error('加载失败: ' + (e?.message || '未知错误')); console.error(e) }
   finally { loading.value = false }
 }
@@ -108,10 +125,20 @@ async function handleSavePool() {
 async function handleDelete(id: number) { await api.delete(`/admin/pools/${id}`); load() }
 
 // Add item to pool
-function openAddItem() { itemForm.value = { provider_id: null, model: '', priority: 1, weight: 1, is_active: true }; showAddItemModal.value = true }
+function openAddItem() {
+  itemForm.value = { platform_id: null, key_label: null, model: '', priority: 1, weight: 1, is_active: true }
+  showAddItemModal.value = true
+}
 async function handleAddItem() {
-  if (!itemForm.value.provider_id || !itemForm.value.model) return message.warning('Provider 和 Model 必填')
-  await api.post(`/admin/pools/${configPool.value.id}/items`, itemForm.value)
+  if (!itemForm.value.platform_id || !itemForm.value.model) return message.warning('Platform 和 Model 必填')
+  await api.post(`/admin/pools/${configPool.value.id}/items`, {
+    platform_id: itemForm.value.platform_id,
+    key_label: itemForm.value.key_label || undefined,
+    model: itemForm.value.model,
+    priority: itemForm.value.priority,
+    weight: itemForm.value.weight,
+    is_active: itemForm.value.is_active,
+  })
   showAddItemModal.value = false
   const updated = (await api.get(`/admin/pools/${configPool.value.id}`)).data
   configPool.value = updated
@@ -183,6 +210,7 @@ onMounted(load)
         <p class="text-[12px] text-text-secondary leading-relaxed">
           Priority routing evaluates models in order. If a request fails or times out, it falls back to the next priority.
           Weights are applied only if multiple models share the exact same priority level (Round Robin).
+          Each pool item can optionally specify a Platform Key; if not specified, all enabled keys under that platform are used.
         </p>
       </div>
 
@@ -194,10 +222,13 @@ onMounted(load)
     <!-- Add Item Modal -->
     <NModal v-model:show="showAddItemModal" preset="card" title="Add Target Model" style="width:440px">
       <NForm label-placement="top">
-        <NFormItem label="Provider">
-          <NSelect v-model:value="itemForm.provider_id" :options="providers.map((p:any) => ({label: p.name, value: p.id}))" placeholder="Select provider" />
+        <NFormItem label="Platform">
+          <NSelect v-model:value="itemForm.platform_id" :options="platforms.map((p:any) => ({label: p.name, value: p.id, disabled: !p.is_active}))" placeholder="Select platform" />
         </NFormItem>
-        <NFormItem label="Model Name"><NInput v-model:value="itemForm.model" placeholder="e.g. gpt-4o" /></NFormItem>
+        <NFormItem v-if="itemForm.platform_id" label="Key Label (optional, leave empty to use all keys)">
+          <NSelect v-model:value="itemForm.key_label" :options="selectedPlatformKeys" placeholder="All enabled keys" clearable />
+        </NFormItem>
+        <NFormItem label="Model Name"><NInput v-model:value="itemForm.model" placeholder="e.g. gpt-4o, deepseek-v4-pro" /></NFormItem>
         <NFormItem label="Priority (1 = highest)"><NInputNumber v-model:value="itemForm.priority" :min="1" /></NFormItem>
         <NFormItem label="Weight"><NInputNumber v-model:value="itemForm.weight" :min="0" /></NFormItem>
         <NFormItem label="Active"><NSwitch v-model:value="itemForm.is_active" /></NFormItem>

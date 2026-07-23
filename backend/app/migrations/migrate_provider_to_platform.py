@@ -173,6 +173,10 @@ def migrate(db_path: str) -> bool:
             cursor.execute("ALTER TABLE pool_items ADD COLUMN platform_key_id INTEGER")
             print("  ✓ 添加列: pool_items.platform_key_id")
 
+        if "key_label" not in columns:
+            cursor.execute("ALTER TABLE pool_items ADD COLUMN key_label TEXT DEFAULT ''")
+            print("  ✓ 添加列: pool_items.key_label")
+
         # ============================================================
         # 5. 更新 pool_items 数据：provider_id → platform_id
         # ============================================================
@@ -205,9 +209,10 @@ def migrate(db_path: str) -> bool:
 
             cursor.execute("""
                 UPDATE pool_items
-                SET platform_id = ?, platform_key_id = ?
+                SET platform_id = ?, platform_key_id = ?,
+                    key_label = (SELECT label FROM platform_keys WHERE id = ?)
                 WHERE id = ?
-            """, (platform_id, provider_id_to_key_id[provider_id], pi_id))
+            """, (platform_id, provider_id_to_key_id[provider_id], provider_id_to_key_id[provider_id], pi_id))
 
         print(f"  ✓ 更新了 {len(pool_items)} 个 pool_items")
 
