@@ -481,8 +481,15 @@ async def _restore_windows():
         if _PROVIDER_STATE:
             pid0 = next(iter(_PROVIDER_STATE))
             st0 = _PROVIDER_STATE[pid0]
+            import time as _t
+            now = _t.time()
             for m, sw in st0.windows.items():
-                print(f"[health] VERIFY pid={pid0} model={m!r} rpd={sw.count(86400)} buckets={len(sw._buckets)}")
+                print(f"[health] VERIFY pid={pid0} model={m!r} rpd={sw.count(86400)} buckets={len(sw._buckets)} now={int(now)} cutoff_24h={int(now-86400)}")
+                if sw._buckets:
+                    first = sw._buckets[0]
+                    last = sw._buckets[-1]
+                    print(f"[health]   first_bucket ts={int(first.ts)} age={int((now-first.ts)/3600)}h req={first.request_count}")
+                    print(f"[health]   last_bucket  ts={int(last.ts)} age={int((now-last.ts)/3600)}h req={last.request_count}")
 
 
 async def _persist_cooldowns():
