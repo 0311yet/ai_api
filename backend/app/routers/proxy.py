@@ -45,23 +45,6 @@ def _first_user_message(body: dict) -> str:
     return ""
 
 
-@router.get("/debug/proxy_test")
-async def debug_proxy_test(session: AsyncSession = Depends(get_session)):
-    """Debug: test proxy_json_request directly"""
-    from app.models import Pool
-    from sqlalchemy import select
-    from app.services.proxy import proxy_json_request
-    import time
-    pool = (await session.execute(select(Pool).where(Pool.id == 1))).scalar_one()
-    t0 = time.time()
-    code, data, meta = await proxy_json_request(pool, {
-        "model": "deepseek-ai/deepseek-v4-pro",
-        "messages": [{"role": "user", "content": "hi"}],
-        "max_tokens": 3,
-    })
-    return {"code": code, "time": time.time() - t0, "meta": meta}
-
-
 @router.get("/models")
 async def get_models(request: Request, session: AsyncSession = Depends(get_session)):
     """列出所有 active 的 pool 作为可用 model（支持 OpenAI / Anthropic 格式协商）"""
