@@ -71,6 +71,8 @@ class SlidingWindow:
         这样 count(60) 才是真正的 60 秒滑动窗口——请求后恰好 60 秒过期。
         同一分钟内的多次请求合并到该分钟的首个 bucket（按分钟对齐判断）。
         """
+        # 写入时借机清理超过 24h 的 bucket，避免 deque 无限增长
+        self._evict_expired(86400)
         now = time.time()
         now_min = int(now // 60) * 60.0
         if self._buckets and abs(self._buckets[-1].ts - now_min) < 1e-6:
@@ -81,18 +83,30 @@ class SlidingWindow:
             # 新分钟，新建 bucket，时间戳用请求实际时刻
             self._buckets.append(MinuteBucket(ts=now, request_count=1, token_count=token_count))
 
-    def _get_buckets_under(self, window_seconds: float) -> list:
-        """返回窗口内的所有 bucket，清除过期数据"""
+    def _get_buckets_in_window(self, window_seconds: float) -> list:
+        """返回窗口内所有 bucket（只读，不修改 deque）。
+
+        注意：必须保持非破坏性语义。同一个 SlidingWindow 对象的 deque 会被
+        count(60) 和 count(86400) 先后调用——如果 count(60) 先 popleft 所有
+        超过 60s 的 buckets，count(86400) 之后就会看到空 deque，永远返回 0。
+        所以这里不 pop 过期数据，过期清理交给 add() 在写入时懒执行。
+        """
         cutoff = time.time() - window_seconds
+        # 过滤而非 popleft，保持非破坏性
+        return [b for b in self._buckets if b.ts >= cutoff]
+
+    def _evict_expired(self, max_age_seconds: float = 86400) -> None:
+        """真正 popleft 删除超过 max_age 的 bucket，由 add() 在写入路径调用。
+        这样过期清理只在写入时发生，不会污染只读的 count/tokens 调用。"""
+        cutoff = time.time() - max_age_seconds
         while self._buckets and self._buckets[0].ts < cutoff:
             self._buckets.popleft()
-        return list(self._buckets)
 
     def count(self, window_seconds: float) -> int:
-        return sum(b.request_count for b in self._get_buckets_under(window_seconds))
+        return sum(b.request_count for b in self._get_buckets_in_window(window_seconds))
 
     def tokens(self, window_seconds: float) -> int:
-        return sum(b.token_count for b in self._get_buckets_under(window_seconds))
+        return sum(b.token_count for b in self._get_buckets_in_window(window_seconds))
 
     def to_snapshot(self) -> dict:
         """序列化，用于 DB flush"""
@@ -134,9 +148,6 @@ class ProviderState:
     def get_window(self, model: str = "") -> SlidingWindow:
         if model not in self.windows:
             self.windows[model] = SlidingWindow()
-            print(f"[health] get_window CREATE pid={self.provider_id} model={model!r} id(self)={id(self)} id(sw)={id(self.windows[model])} total_windows={len(self.windows)}")
-        else:
-            print(f"[health] get_window REUSE pid={self.provider_id} model={model!r} id(self)={id(self)} id(sw)={id(self.windows[model])} buckets={len(self.windows[model]._buckets)} total_windows={len(self.windows)}")
         return self.windows[model]
 
     def is_in_cooldown(self) -> bool:
@@ -480,19 +491,6 @@ async def _restore_windows():
                 total_buckets += 1
 
         print(f"[health] restored sliding windows: {total_providers} providers, {total_buckets} minute-buckets")
-        # 立即验证：检查第一个 provider 的窗口
-        if _PROVIDER_STATE:
-            pid0 = next(iter(_PROVIDER_STATE))
-            st0 = _PROVIDER_STATE[pid0]
-            import time as _t
-            now = _t.time()
-            for m, sw in st0.windows.items():
-                print(f"[health] VERIFY pid={pid0} model={m!r} rpd={sw.count(86400)} buckets={len(sw._buckets)} now={int(now)} cutoff_24h={int(now-86400)}")
-                if sw._buckets:
-                    first = sw._buckets[0]
-                    last = sw._buckets[-1]
-                    print(f"[health]   first_bucket ts={int(first.ts)} age={int((now-first.ts)/3600)}h req={first.request_count}")
-                    print(f"[health]   last_bucket  ts={int(last.ts)} age={int((now-last.ts)/3600)}h req={last.request_count}")
 
 
 async def _persist_cooldowns():

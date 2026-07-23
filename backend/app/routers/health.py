@@ -53,14 +53,11 @@ async def health_overview(session: AsyncSession = Depends(get_session)):
                     base_priority=pool_item.priority,
                 )
                 ph.register_provider(state)
-                print(f"[health] lazy registered pid={provider.id} model={pool_item.model} windows_count={len(state.windows)}")
 
             win = state.get_window(pool_item.model)
-            rpd = win.count(86400)
-            print(f"[health] QUERY pid={provider.id} model={pool_item.model!r} rpd={rpd} buckets={len(win._buckets)} state_windows_count={len(state.windows)}")
             rate_window = RateLimitWindow(
                 rpm=win.count(60),
-                rpd=rpd,
+                rpd=win.count(86400),
                 tpm=win.tokens(60),
                 tpd=win.tokens(86400),
             )
