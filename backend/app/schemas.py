@@ -58,16 +58,6 @@ class PlatformUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
-class PlatformOut(PlatformBase):
-    id: int
-    created_at: datetime
-    updated_at: datetime
-    platform_keys: List[PlatformKeyOut] = Field(default_factory=list)
-
-    class Config:
-        from_attributes = True
-
-
 # ---------------- PlatformKey ----------------
 class PlatformKeyBase(BaseModel):
     api_key: str
@@ -83,7 +73,6 @@ class PlatformKeyUpdate(BaseModel):
     api_key: Optional[str] = None
     label: Optional[str] = None
     enabled: Optional[bool] = None
-    is_active: Optional[bool] = None
 
 
 class PlatformKeyOut(PlatformKeyBase):
@@ -91,14 +80,24 @@ class PlatformKeyOut(PlatformKeyBase):
     platform_id: int
     is_active: bool = True
     created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ---------------- PlatformOut (after PlatformKeyOut) ----------------
+class PlatformOut(PlatformBase):
+    id: int
+    created_at: datetime
     updated_at: datetime
+    platform_keys: List[PlatformKeyOut] = Field(default_factory=list)
 
     class Config:
         from_attributes = True
 
 
 class PlatformDetailOut(PlatformOut):
-    platform_keys: List[PlatformKeyOut] = Field(default_factory=list)
+    # platform_keys inherited from PlatformOut
 
     class Config:
         from_attributes = True
