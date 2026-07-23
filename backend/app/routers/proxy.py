@@ -90,13 +90,13 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
     is_stream = body.get("stream", False)
     multi_turn = is_multi_turn(body.get("messages", []))
     session_key = None
-    sticky_provider_id = None
+    sticky_platform_key_id = None
     if multi_turn and first_msg:
         session_key = StickySessionManager.make_key(ip, first_msg)
-        valid_ids = {item.provider_id for item in pool.pool_items if item.is_active}
+        valid_ids = {item.platform_key_id for item in pool.pool_items if item.is_active and item.platform_key_id}
         resolved = StickySessionManager.resolve(session_key, valid_ids)
         if resolved:
-            sticky_provider_id = resolved[0]
+            sticky_platform_key_id = resolved[0]
 
     ua = request.headers.get("user-agent", "")
     request_id = str(uuid.uuid4())
@@ -104,7 +104,7 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
     extra_headers = {}
 
     if is_stream:
-        code, gen, meta_container = await proxy_stream_request(pool, body, sticky_provider_id)
+        code, gen, meta_container = await proxy_stream_request(pool, body, sticky_platform_key_id)
         if code != 200:
             log = make_log(client_key_id, model, request_id, "failed", {
                 "latency_ms": 0, "ttft_ms": 0, "error": "All upstreams failed",
@@ -125,8 +125,8 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
                 meta = meta_container or {}
                 total_tokens = meta.get("total_tokens", 0)
                 # Sticky Session：成功后绑定
-                if session_key and meta.get("provider_id"):
-                    StickySessionManager.bind(session_key, meta["provider_id"], model)
+                if session_key and meta.get("platform_key_id"):
+                    StickySessionManager.bind(session_key, meta["platform_key_id"], model)
                 async with async_session() as s:
                     log = make_log(
                         client_key_id, model, request_id, "success", meta,
@@ -142,7 +142,7 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
         return StreamingResponse(stream_with_log(), media_type="text/event-stream")
 
     else:
-        code, resp_data, meta = await proxy_json_request(pool, body, sticky_provider_id)
+        code, resp_data, meta = await proxy_json_request(pool, body, sticky_platform_key_id)
         log = make_log(
             client_key_id, model, request_id,
             "success" if code == 200 else "failed",
@@ -155,8 +155,8 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
         await session.commit()
         await increment_key_usage(client_key_id, meta.get("total_tokens", 0))
         # Sticky Session：成功后绑定
-        if code == 200 and session_key and meta.get("provider_id"):
-            StickySessionManager.bind(session_key, meta["provider_id"], model)
+        if code == 200 and session_key and meta.get("platform_key_id"):
+            StickySessionManager.bind(session_key, meta["platform_key_id"], model)
         # 注入响应头
         extra_headers = meta.get("headers", {})
         if code == 200:
@@ -293,7 +293,7 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
     sticky_provider_id = None
     if multi_turn and first_msg:
         session_key = StickySessionManager.make_key(ip, first_msg)
-        valid_ids = {item.provider_id for item in pool.pool_items if item.is_active}
+        valid_ids = {item.platform_key_id for item in pool.pool_items if item.is_active and item.platform_key_id}
         resolved = StickySessionManager.resolve(session_key, valid_ids)
         if resolved:
             sticky_provider_id = resolved[0]
@@ -333,8 +333,8 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
             finally:
                 meta = meta_container or {}
                 total_tokens = meta.get("total_tokens", 0)
-                if session_key and meta.get("provider_id"):
-                    StickySessionManager.bind(session_key, meta["provider_id"], model)
+                if session_key and meta.get("platform_key_id"):
+                    StickySessionManager.bind(session_key, meta["platform_key_id"], model)
                 async with async_session() as s:
                     combined = b"".join(yield_buffer).decode("utf-8", errors="replace")[:5000]
                     log = make_log(
@@ -365,8 +365,8 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
         session.add(log)
         await session.commit()
         await increment_key_usage(client_key_id, meta.get("total_tokens", 0))
-        if code == 200 and session_key and meta.get("provider_id"):
-            StickySessionManager.bind(session_key, meta["provider_id"], model)
+        if code == 200 and session_key and meta.get("platform_key_id"):
+            StickySessionManager.bind(session_key, meta["platform_key_id"], model)
         extra_headers = meta.get("headers", {})
         if code == 200:
             return JSONResponse(content=anthropic_resp, headers=extra_headers)

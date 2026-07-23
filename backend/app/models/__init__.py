@@ -143,6 +143,8 @@ class RequestLog(Base):
 
     # 保留 provider_id 字段（现在改为 platform_key_id）
     provider_id: Mapped[Optional[int]] = mapped_column(ForeignKey("providers.id", ondelete="SET NULL"), nullable=True)
+    # 新增：指向 Platform
+    platform_id: Mapped[Optional[int]] = mapped_column(ForeignKey("platforms.id", ondelete="SET NULL"), nullable=True)
     # 新增：指向 PlatformKey
     platform_key_id: Mapped[Optional[int]] = mapped_column(ForeignKey("platform_keys.id", ondelete="SET NULL"), nullable=True)
 

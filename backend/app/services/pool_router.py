@@ -32,6 +32,10 @@ class RoutableItem:
     priority: int
     weight: float
     base_priority: int
+    # 直接带上调用上游需要的凭证信息，避免 proxy.py 再去查 DB
+    base_url: str = ""
+    api_key: str = ""
+    is_paid: bool = False
 
     @property
     def effective_priority(self) -> int:
@@ -100,6 +104,7 @@ class PoolRouter:
                     PoolItem.pool_id == pool_id,
                 )
                 .options(selectinload(Platform.platform_keys))
+                .order_by(PoolItem.priority, PoolItem.id)
             )
             if model:
                 stmt = stmt.where(PoolItem.model == model)
@@ -128,6 +133,9 @@ class PoolRouter:
                         priority=pool_item.priority,
                         weight=pool_item.weight,
                         base_priority=pool_item.priority,
+                        base_url=platform.base_url,
+                        api_key=key.api_key,
+                        is_paid=platform.is_paid,
                     )
                     routable_items.append(item)
 
@@ -141,6 +149,10 @@ class PoolRouter:
                         )
                         ph.register_platform_key_state(state)
 
+            # 按有效优先级排序（高的在前），同优先级按 pool_item_id 再 key_id
+            routable_items.sort(
+                key=lambda i: (-i.effective_priority, i.pool_item_id, i.platform_key_id)
+            )
             return routable_items
 
     def select_by_priority(

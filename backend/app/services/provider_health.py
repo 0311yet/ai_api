@@ -284,6 +284,16 @@ class StickySessionManager:
             del self.sessions[session_key]
         return None
 
+    def resolve(self, session_key: str, valid_ids: set) -> Optional[Tuple]:
+        """解析 sticky session，返回 (platform_key_id, model)；无效返回 None"""
+        entry = self.get(session_key)
+        if not entry:
+            return None
+        if entry.platform_key_id not in valid_ids:
+            # 粘性 key 不在候选集内（可能已被禁用）
+            return None
+        return (entry.platform_key_id, entry.model)
+
     def unbind(self, session_key: str) -> None:
         if session_key in self.sessions:
             del self.sessions[session_key]

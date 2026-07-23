@@ -1,4 +1,5 @@
-"""代理服务 - 转发客户端请求到上游 Provider
+"""
+代理服务 - 转发客户端请求到上游 PlatformKey
 
 增强功能：
 - 自动路由 + 故障转移（429/5xx 自动回退，最多 N 次）
@@ -6,10 +7,11 @@
 - 冷却升级策略（429 指数增长）
 - 动态惩罚路由（429 时 +3，每 2 分钟 -1）
 - Sticky Session（多轮对话 30 分钟粘性）
+- **同 Platform 下 Key 级回退**（429 时切换同一 Platform 的其他 Keys）
 
 响应头：
 - X-Fallback-Attempts: 回退尝试次数
-- X-Routed-Via: 实际调用的 provider (id / model)
+- X-Routed-Via: 实际调用的 PlatformKey (platform_id/key_id/model)
 """
 import time
 import json
@@ -24,25 +26,9 @@ from sqlalchemy.orm import selectinload
 
 from app.database import async_session
 from app.config import settings
-from app.models import ClientKey, Pool, PoolItem, Provider, RequestLog
+from app.models import ClientKey, Pool, PoolItem, Platform, PlatformKey, RequestLog
 from app.services.pool_router import PoolRouter
 from app.services import provider_health as ph
-
-
-def _ensure_provider_state(item: PoolItem):
-    """确保 provider 已注册到 health 系统"""
-    if not item.provider:
-        return
-    state = ph.get_provider_state(item.provider.id)
-    if state is None:
-        state = ph.ProviderState(
-            provider_id=item.provider.id,
-            provider_name=item.provider.name,
-            base_url=item.provider.base_url,
-            is_active=item.provider.is_active,
-            base_priority=item.priority,
-        )
-        ph.register_provider(state)
 
 
 async def authenticate_client(
@@ -55,7 +41,12 @@ async def authenticate_client(
     key_str = authorization[7:]
     q = (
         select(ClientKey)
-        .options(selectinload(ClientKey.pool).selectinload(Pool.pool_items).selectinload(PoolItem.provider))
+        .options(
+            selectinload(ClientKey.pool)
+            .selectinload(Pool.pool_items)
+            .selectinload(PoolItem.platform)
+            .selectinload(PoolItem.platform.platform_keys)
+        )
         .where(ClientKey.key == key_str)
     )
     key_obj = (await session.execute(q)).scalar_one_or_none()
@@ -71,30 +62,22 @@ def check_model_allowed(client_key: ClientKey, model: str) -> bool:
     return model in client_key.allowed_models
 
 
-def resolve_pool_for_key(client_key: ClientKey, model: str) -> Optional[Pool]:
-    """从 client_key 绑定的 pool 找到实际的 Pool 实例（model 过滤在 get_ordered_items 中做）"""
-    pool = client_key.pool
-    if not pool or not pool.is_active:
-        return None
-    return pool
-
-
 async def get_ordered_items(
     pool: Pool,
     strategy: str,
-    sticky_provider_id: Optional[int] = None,
+    sticky_platform_key_id: Optional[int] = None,
 ) -> Tuple[list, int]:
     """
-    获取按策略排序的候选 PoolItem 列表（健康感知）。
-    上游转发时用 pool_item.model（如为空则用客户端请求的 model）。
+    获取按策略排序的候选 PoolItem 列表（健康感知）
+    每个 PoolItem 会被展开为多个 RoutableItem（同一 Platform 的多个 Keys）
     """
-    # 不做 model 过滤 —— 所有 active pool_items 都是候选
-    # pool_item.model 决定转发给上游时用哪个模型
-    router = PoolRouter(list(pool.pool_items))
-    items, fallback_count = router.select_all_routable(strategy, sticky_provider_id)
-    # 确保所有 provider 已注册
-    for item in items:
-        _ensure_provider_state(item)
+    # 使用 PoolRouter 的 get_routable_items 获取所有 PoolItem + PlatformKeys
+    from app.services.pool_router import get_routable_items
+    items, fallback_count = await get_routable_items(
+        pool.id,
+        model="",
+        sticky_platform_key_id=sticky_platform_key_id,
+    )
     return items, fallback_count
 
 
@@ -105,30 +88,48 @@ def is_multi_turn(messages: list) -> bool:
 
 def make_session_key(ip: str, first_user_message: str) -> str:
     """生成 Sticky Session key"""
-    return StickySessionManager.make_key(ip, first_user_message)
+    return ph.StickySessionManager.make_key(ip, first_user_message)
 
 
 # ── 核心代理逻辑 ──────────────────────────────────────────────────
+
 async def proxy_json_request(
     pool: Pool,
     body: dict,
-    sticky_provider_id: Optional[int] = None,
+    sticky_platform_key_id: Optional[int] = None,
 ) -> tuple:
-    """非流式代理（增强版：限流/冷却/惩罚路由）"""
+    """非流式代理（增强版：限流/冷却/惩罚路由 + Key 级回退）"""
     start = time.time()
-    ordered, fallback_count = await get_ordered_items(pool, pool.strategy, sticky_provider_id)
+    ordered, fallback_count = await get_ordered_items(pool, pool.strategy, sticky_platform_key_id)
 
     last_error = ""
+    last_platform_key_id = None
     last_provider_id = None
     last_provider_model = None
 
-    for item in ordered:
-        if not item.provider or not item.provider.is_active:
+    for pool_item in ordered:
+        platform_key_id = pool_item.platform_key_id
+        state = ph.get_platform_key_state(platform_key_id)
+        if not state:
+            # 无状态（不应发生），创建默认状态
+            state = ph.PlatformKeyHealthState(
+                platform_key_id=platform_key_id,
+                platform_id=pool_item.platform_id,
+                key_label=pool_item.key_label,
+            )
+            ph.register_platform_key_state(state)
+
+        # 检查该 key 是否可用（冷却/健康状态）
+        can_serve, reason = state.can_serve(pool_item.model)
+        if not can_serve:
+            last_error = f"{state.key_label} (key {platform_key_id}) is {reason}"
             continue
-        upstream_url = f"{item.provider.base_url.rstrip('/')}/chat/completions"
+
+        # 使用该 key 调用上游
+        upstream_url = f"{pool_item.base_url.rstrip('/')}/chat/completions"
         upstream_body = {
             **body,
-            "model": item.model or body.get("model", ""),
+            "model": pool_item.model or body.get("model", ""),
             "stream": False,
         }
 
@@ -139,49 +140,47 @@ async def proxy_json_request(
                     upstream_url,
                     json=upstream_body,
                     headers={
-                        "Authorization": f"Bearer {item.provider.api_key}",
+                        "Authorization": f"Bearer {pool_item.api_key}",
                         "Content-Type": "application/json",
                     },
                 )
                 ttft = (time.time() - t0) * 1000
-                last_provider_id = item.provider.id
-                last_provider_model = item.model
+                last_platform_key_id = platform_key_id
+                last_provider_id = pool_item.platform_id
+                last_provider_model = pool_item.model
 
                 if resp.status_code == 200:
                     # 成功
-                    state = ph.get_provider_state(item.provider.id)
-                    if state:
-                        state.record_success()
+                    state.record_success()
                     data = resp.json()
                     usage = data.get("usage", {}) or {}
                     pt = usage.get("prompt_tokens", 0)
                     ct = usage.get("completion_tokens", 0)
                     total = pt + ct
                     if total > 0:
-                        await ph.record_request(item.provider.id, item.model, total)
+                        await ph.record_request(platform_key_id, pool_item.model, total)
                     return (
                         200,
                         data,
                         _make_meta(
-                            item, fallback_count, start,
+                            pool_item, platform_key_id,
+                            fallback_count, start,
                             pt=pt, ct=ct, ttft=ttft,
                         ),
                     )
                 elif resp.status_code == 429:
-                    # 429：触发惩罚 + 冷却 + 限流记录
-                    state = ph.get_provider_state(item.provider.id)
-                    if state:
-                        dur = state.record_429()
-                    await ph.record_request(item.provider.id, item.model, tokens=0)
-                    last_error = f"Upstream 429 from {item.provider.name} -> cooldown {int(dur.total_seconds()) if 'dur' in dir() else '?'}s"
+                    # 429：触发惩罚 + 冷却
+                    dur = state.record_429()
+                    await ph.record_request(platform_key_id, pool_item.model, tokens=0)
+                    last_error = f"{state.key_label} (key {platform_key_id}) is in cooldown ({int(dur.total_seconds()) if hasattr(dur, 'total_seconds') else int(dur)}s)"
                     continue
                 else:
-                    last_error = f"Upstream {resp.status_code} from {item.provider.name}"
+                    last_error = f"{pool_item.key_label} (key {platform_key_id}) upstream {resp.status_code}"
                     continue
         except httpx.TimeoutException:
-            last_error = f"Timeout from {item.provider.name}"
+            last_error = f"{pool_item.key_label} (key {platform_key_id}) timeout"
         except Exception as e:
-            last_error = f"{item.provider.name} error: {str(e)}"
+            last_error = f"{pool_item.key_label} (key {platform_key_id}) error: {str(e)}"
 
     # 所有尝试都失败
     return 502, {"error": {"message": f"All upstreams failed: {last_error}"}}, _make_meta_fail(
@@ -192,23 +191,37 @@ async def proxy_json_request(
 async def proxy_stream_request(
     pool: Pool,
     body: dict,
-    sticky_provider_id: Optional[int] = None,
+    sticky_platform_key_id: Optional[int] = None,
 ) -> tuple:
-    """流式代理（增强版）"""
+    """流式代理（增强版 + Key 级回退）"""
     start = time.time()
-    ordered, fallback_count = await get_ordered_items(pool, pool.strategy, sticky_provider_id)
+    ordered, fallback_count = await get_ordered_items(pool, pool.strategy, sticky_platform_key_id)
 
     last_error = ""
+    last_platform_key_id = None
     last_provider_id = None
     last_provider_model = None
 
-    for item in ordered:
-        if not item.provider or not item.provider.is_active:
+    for pool_item in ordered:
+        platform_key_id = pool_item.platform_key_id
+        state = ph.get_platform_key_state(platform_key_id)
+        if not state:
+            state = ph.PlatformKeyHealthState(
+                platform_key_id=platform_key_id,
+                platform_id=pool_item.platform_id,
+                key_label=pool_item.key_label,
+            )
+            ph.register_platform_key_state(state)
+
+        can_serve, reason = state.can_serve(pool_item.model)
+        if not can_serve:
+            last_error = f"{state.key_label} (key {platform_key_id}) is {reason}"
             continue
-        upstream_url = f"{item.provider.base_url.rstrip('/')}/chat/completions"
+
+        upstream_url = f"{pool_item.base_url.rstrip('/')}/chat/completions"
         upstream_body = {
             **body,
-            "model": item.model or body.get("model", ""),
+            "model": pool_item.model or body.get("model", ""),
             "stream": True,
         }
 
@@ -220,7 +233,7 @@ async def proxy_stream_request(
                     "POST", upstream_url,
                     json=upstream_body,
                     headers={
-                        "Authorization": f"Bearer {item.provider.api_key}",
+                        "Authorization": f"Bearer {pool_item.api_key}",
                         "Content-Type": "application/json",
                         "Accept": "text/event-stream",
                     },
@@ -228,12 +241,11 @@ async def proxy_stream_request(
                 stream=True,
             )
             ttft = (time.time() - t0) * 1000
-            last_provider_id = item.provider.id
-            last_provider_model = item.model
+            last_platform_key_id = platform_key_id
+            last_provider_id = pool_item.platform_id
+            last_provider_model = pool_item.model
 
             if resp.status_code == 200:
-                chosen_item_id = item.id
-                chosen_provider_id = item.provider.id
                 meta_container: dict = {}
                 meta_container_ref = meta_container
 
@@ -251,7 +263,6 @@ async def proxy_stream_request(
                                             u = obj.get("usage", {})
                                             if u:
                                                 last_usage = u
-                                            # 累计 completion tokens（每个 delta 的 content 字符数累加）
                                             deltas = obj.get("choices", [{}])
                                             for choice in deltas:
                                                 delta = choice.get("delta", {})
@@ -263,26 +274,23 @@ async def proxy_stream_request(
                     finally:
                         await resp.aclose()
                         await client.aclose()
-                        # 从最后一条 usage 提取 token 数（流式只在最后 chunk 返回）
                         total = last_usage.get("total_tokens", 0)
                         pt = last_usage.get("prompt_tokens")
                         if pt is None:
-                            # 总 tokens 已知时反推 prompt_tokens
                             ct_from_usage = last_usage.get("completion_tokens", 0)
                             pt = max(0, total - ct_from_usage) if total else 0
                         ct = last_usage.get("completion_tokens") or completion_tokens
                         meta_container_ref.update(_make_meta(
-                            item, fallback_count, start,
+                            pool_item, platform_key_id,
+                            fallback_count, start,
                             pt=pt, ct=ct, ttft=ttft,
                         ))
 
                 return 200, gen(), meta_container
             elif resp.status_code == 429:
-                state = ph.get_provider_state(item.provider.id)
-                if state:
-                    dur = state.record_429()
-                await ph.record_request(item.provider.id, item.model, tokens=0)
-                last_error = f"Upstream 429 from {item.provider.name}"
+                dur = state.record_429()
+                await ph.record_request(platform_key_id, pool_item.model, tokens=0)
+                last_error = f"{state.key_label} (key {platform_key_id}) is in cooldown"
                 await resp.aread()
                 await resp.aclose()
                 await client.aclose()
@@ -291,18 +299,19 @@ async def proxy_stream_request(
                 await resp.aread()
                 await resp.aclose()
                 await client.aclose()
-                last_error = f"Upstream {resp.status_code} from {item.provider.name}"
+                last_error = f"{pool_item.key_label} (key {platform_key_id}) upstream {resp.status_code}"
                 continue
         except httpx.TimeoutException:
-            last_error = f"Timeout from {item.provider.name}"
+            last_error = f"{pool_item.key_label} (key {platform_key_id}) timeout"
         except Exception as e:
-            last_error = f"{item.provider.name} error: {str(e)}"
+            last_error = f"{pool_item.key_label} (key {platform_key_id}) error: {str(e)}"
 
     return 502, None, None
 
 
 def _make_meta(
-    item: PoolItem,
+    pool_item,
+    platform_key_id: int,
     fallback_count: int,
     start: float,
     pt: int = 0,
@@ -311,8 +320,9 @@ def _make_meta(
     error: str = "",
 ) -> dict:
     return {
-        "pool_item_id": item.id,
-        "provider_id": item.provider.id,
+        "pool_item_id": pool_item.pool_item_id if hasattr(pool_item, "pool_item_id") else pool_item.id,
+        "platform_id": pool_item.platform_id,
+        "platform_key_id": platform_key_id,
         "prompt_tokens": pt,
         "completion_tokens": ct,
         "total_tokens": pt + ct,
@@ -321,13 +331,13 @@ def _make_meta(
         "error": error,
         "headers": {
             "X-Fallback-Attempts": str(fallback_count),
-            "X-Routed-Via": f"{item.provider.id} ({item.model})",
+            "X-Routed-Via": f"key {platform_key_id} ({pool_item.model})",
         },
     }
 
 
 def _make_meta_fail(
-    provider_id: Optional[int],
+    platform_id: Optional[int],
     model: Optional[str],
     fallback_count: int,
     start: float,
@@ -335,7 +345,8 @@ def _make_meta_fail(
 ) -> dict:
     return {
         "pool_item_id": None,
-        "provider_id": provider_id,
+        "platform_id": platform_id,
+        "platform_key_id": None,
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "total_tokens": 0,
@@ -344,7 +355,7 @@ def _make_meta_fail(
         "error": error,
         "headers": {
             "X-Fallback-Attempts": str(fallback_count),
-            "X-Routed-Via": f"{provider_id} ({model})" if provider_id else "",
+            "X-Routed-Via": f"{platform_id} ({model})" if platform_id else "",
         },
     }
 
@@ -364,7 +375,9 @@ def make_log(
     return RequestLog(
         client_key_id=client_key_id,
         pool_item_id=meta.get("pool_item_id"),
-        provider_id=meta.get("provider_id"),
+        platform_id=meta.get("platform_id"),
+        platform_key_id=meta.get("platform_key_id"),
+        provider_id=None,  # 已废弃，使用 platform_key_id
         model=model,
         request_id=request_id,
         status=status,
@@ -404,17 +417,24 @@ async def list_available_models(session: AsyncSession) -> list:
 
 
 class StickySessionManager:
+    """Sticky Session 管理器（圆该老接口名称，内部使用 platform_key_id）"""
+
     @staticmethod
     def make_key(ip: str, first_user_message: str) -> str:
         return ph.StickySessionManager_instance.make_key(ip, first_user_message)
 
     @staticmethod
-    def bind(key: str, provider_id: int, model: str):
-        ph.StickySessionManager_instance.bind(key, provider_id, model)
+    def bind(key: str, platform_key_id: int, model: str):
+        ph.StickySessionManager_instance.bind(key, platform_key_id, model)
 
     @staticmethod
-    def resolve(key: str, valid_provider_ids: set[int]) -> Optional[Tuple[int, str]]:
-        return ph.StickySessionManager_instance.resolve(key, valid_provider_ids)
+    def resolve(key: str, valid_ids: set):
+        """
+        解析 sticky session
+        Returns:
+            (platform_key_id, model) 或 None
+        """
+        return ph.StickySessionManager_instance.resolve(key, valid_ids)
 
     @staticmethod
     def count() -> int:

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.middleware import verify_admin
-from app.models import RequestLog, ClientKey, Pool, Provider, DailyStats, PoolItem
+from app.models import RequestLog, ClientKey, Pool, Platform, DailyStats, PoolItem
 from app.schemas import (
     DashboardStats, TimeSeriesPoint, ModelStatRow, DailyStatsOut,
 )
@@ -53,7 +53,7 @@ async def get_dashboard_stats(session: AsyncSession = Depends(get_session)):
         select(func.count(Pool.id)).where(Pool.is_active == True)
     )).scalar() or 0
     active_providers = (await session.execute(
-        select(func.count(Provider.id)).where(Provider.is_active == True)
+        select(func.count(Platform.id)).where(Platform.is_active == True)
     )).scalar() or 0
 
     success_rate = (success / total * 100) if total > 0 else 0
@@ -70,21 +70,21 @@ async def get_dashboard_stats(session: AsyncSession = Depends(get_session)):
         )
         .select_from(RequestLog)
         .join(PoolItem, RequestLog.pool_item_id == PoolItem.id)
-        .join(Provider, PoolItem.provider_id == Provider.id)
+        .join(Platform, PoolItem.platform_id == Platform.id)
         .where(RequestLog.status == "success", RequestLog.pool_item_id.is_not(None))
     )).all()
 
-    # 查所有涉及到的 PoolItem（含费率和 provider 的 is_paid）
+    # 查所有涉及到的 PoolItem（含费率和 platform 的 is_paid）
     pitem_ids = {r[0] for r in cost_rows}
     item_map = {}
     if pitem_ids:
         items_data = (await session.execute(
-            select(PoolItem, Provider)
-            .join(Provider, PoolItem.provider_id == Provider.id)
+            select(PoolItem, Platform)
+            .join(Platform, PoolItem.platform_id == Platform.id)
             .where(PoolItem.id.in_(pitem_ids))
         )).all()
-        for item, prov in items_data:
-            item_map[item.id] = (item, prov)
+        for item, plat in items_data:
+            item_map[item.id] = (item, plat)
 
     free_cost = 0.0
     paid_cost = 0.0
@@ -92,8 +92,8 @@ async def get_dashboard_stats(session: AsyncSession = Depends(get_session)):
         entry = item_map.get(pool_item_id)
         if not entry:
             continue
-        item, prov = entry
-        if prov.is_paid:
+        item, plat = entry
+        if plat.is_paid:
             in_price = item.paid_input_price or 0
             out_price = item.paid_output_price or 0
             paid_cost += (pt or 0) / 1_000_000 * in_price + (ct or 0) / 1_000_000 * out_price
