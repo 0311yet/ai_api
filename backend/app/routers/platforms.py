@@ -27,8 +27,8 @@ router = APIRouter(
 
 @router.get("", response_model=list[PlatformOut])
 async def list_platforms(session: AsyncSession = Depends(get_session)):
-    """列出所有 Platforms"""
-    q = select(Platform).order_by(Platform.name)
+    """列出所有 Platforms（含 Keys）"""
+    q = select(Platform).options(selectinload(Platform.platform_keys)).order_by(Platform.name)
     result = await session.execute(q)
     return result.scalars().all()
 

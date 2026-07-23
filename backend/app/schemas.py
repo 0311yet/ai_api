@@ -62,6 +62,7 @@ class PlatformOut(PlatformBase):
     id: int
     created_at: datetime
     updated_at: datetime
+    platform_keys: List[PlatformKeyOut] = Field(default_factory=list)
 
     class Config:
         from_attributes = True
