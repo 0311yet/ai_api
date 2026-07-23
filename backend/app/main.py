@@ -53,7 +53,7 @@ app.include_router(health.router)
 app.include_router(proxy.router)
 
 
-@app.get("/health")
+@app.get("/healthz")
 async def health():
     return {"status": "ok", "service": "ai-api-gateway"}
 
@@ -68,7 +68,7 @@ if Path(_static_dir).is_dir():
     async def spa_fallback(full_path: str):
         """SPA 回退：非 API 路由统一返回 index.html"""
         # 排除 API 路由（它们优先匹配上面注册的 router）
-        if full_path.startswith(("admin/", "v1/", "health")):
+        if full_path.startswith(("admin/", "v1/")):
             return {"detail": "Not Found"}
         index_file = Path(_static_dir) / "index.html"
         if index_file.is_file():

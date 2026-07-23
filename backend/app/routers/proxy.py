@@ -46,9 +46,24 @@ def _first_user_message(body: dict) -> str:
 
 
 @router.get("/models")
-async def get_models(session: AsyncSession = Depends(get_session)):
-    """列出所有 active 的 pool 作为可用 model"""
-    return {"object": "list", "data": await list_available_models(session)}
+async def get_models(request: Request, session: AsyncSession = Depends(get_session)):
+    """列出所有 active 的 pool 作为可用 model（支持 OpenAI / Anthropic 格式协商）"""
+    pools = await list_available_models(session)
+    
+    # Anthropic 客户端发 anthropic-version header，返回 Anthropic 格式
+    is_anthropic = "anthropic-version" in request.headers
+    if is_anthropic:
+        return {
+            "object": "list",
+            "data": [
+                {"id": "auto", "display_name": "Auto (router picks the best available model)", "created_at": "2026-01-01T00:00:00Z"},
+                *pools,
+            ],
+            "has_more": False,
+            "first_id": "auto",
+            "last_id": pools[-1]["id"] if pools else None,
+        }
+    return {"object": "list", "data": pools}
 
 
 @router.post("/chat/completions")

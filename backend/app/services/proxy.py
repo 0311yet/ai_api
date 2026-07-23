@@ -394,7 +394,7 @@ async def increment_key_usage(client_key_id: int, total_tokens: int):
 
 
 async def list_available_models(session: AsyncSession) -> list:
-    """列出所有 active 的 Pool 名（作为 /v1/models 返回）"""
+    """列出所有 active pool 的名称作为可用 model（OpenAI 格式）"""
     q = select(Pool).where(Pool.is_active == True).order_by(Pool.name)
     pools = (await session.execute(q)).scalars().all()
     return [
@@ -403,7 +403,6 @@ async def list_available_models(session: AsyncSession) -> list:
     ]
 
 
-# ── Sticky Session Manager 简单包装 ────────────────────────────────
 class StickySessionManager:
     @staticmethod
     def make_key(ip: str, first_user_message: str) -> str:
