@@ -343,6 +343,7 @@ async def _restore_cooldowns():
         result = await s.execute(
             select(ProviderCooldown).where(
                 ProviderCooldown.cooldown_until > datetime.now(timezone.utc)
+            )
         )
         for row in result.scalars().all():
             if row.provider_id in _PROVIDER_STATE:
