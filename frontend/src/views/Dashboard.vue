@@ -132,16 +132,16 @@ const latencyTrendOption = computed(() => ({
         <!-- Cost Stat Cards: accumulated free/paid token cost -->
         <div class="grid grid-cols-2 gap-4">
           <StatCard
-            label="免费 API 累计成本"
+            label="Free API Cost"
             :value="fmtCost(sv('free_cost', 0))"
             accent-color="success"
-            sub="按免费 API 费率根据 request_logs 累加"
+            sub="Accumulated by free API rates from request_logs"
           />
           <StatCard
-            label="付费 API 累计成本"
+            label="Paid API Cost"
             :value="fmtCost(sv('paid_cost', 0))"
             accent-color="warning"
-            sub="按付费 API 费率根据 request_logs 累加"
+            sub="Accumulated by paid API rates from request_logs"
           />
         </div>
 
