@@ -30,7 +30,15 @@ async def list_platforms(session: AsyncSession = Depends(get_session)):
     """列出所有 Platforms（含 Keys）"""
     q = select(Platform).options(selectinload(Platform.platform_keys)).order_by(Platform.name)
     result = await session.execute(q)
-    return result.scalars().all()
+    platforms = result.scalars().all()
+    
+    # 手动转成 list[PlatformOut] 以包含 platform_keys
+    out_list = []
+    for p in platforms:
+        out = PlatformOut.model_validate(p)
+        out.platform_keys = [PlatformKeyOut.model_validate(k) for k in p.platform_keys]
+        out_list.append(out)
+    return out_list
 
 
 @router.post("", response_model=PlatformOut, status_code=201)
