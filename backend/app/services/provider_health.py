@@ -134,6 +134,9 @@ class ProviderState:
     def get_window(self, model: str = "") -> SlidingWindow:
         if model not in self.windows:
             self.windows[model] = SlidingWindow()
+            print(f"[health] get_window CREATE pid={self.provider_id} model={model!r} id(self)={id(self)} id(sw)={id(self.windows[model])} total_windows={len(self.windows)}")
+        else:
+            print(f"[health] get_window REUSE pid={self.provider_id} model={model!r} id(self)={id(self)} id(sw)={id(self.windows[model])} buckets={len(self.windows[model]._buckets)} total_windows={len(self.windows)}")
         return self.windows[model]
 
     def is_in_cooldown(self) -> bool:
