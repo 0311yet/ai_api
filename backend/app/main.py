@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 
 from app.config import settings
 from app.database import init_db
-from app.routers import auth, providers, pools, keys, logs, stats, proxy, health, rates
+from app.routers import auth, providers, pools, keys, logs, stats, proxy, health, rates, platforms
 
 
 @asynccontextmanager
@@ -52,6 +52,7 @@ app.include_router(health.router)
 app.include_router(rates.router)
 
 app.include_router(proxy.router)
+app.include_router(platforms.router)
 
 
 @app.get("/healthz")

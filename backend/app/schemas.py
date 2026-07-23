@@ -37,9 +37,77 @@ class ProviderOut(ProviderBase):
         from_attributes = True
 
 
+# ---------------- Platform ----------------
+class PlatformBase(BaseModel):
+    name: str
+    base_url: str
+    models: List[str] = Field(default_factory=list)
+    is_paid: bool = False
+    is_active: bool = True
+
+
+class PlatformCreate(PlatformBase):
+    pass
+
+
+class PlatformUpdate(BaseModel):
+    name: Optional[str] = None
+    base_url: Optional[str] = None
+    models: Optional[List[str]] = None
+    is_paid: Optional[bool] = None
+    is_active: Optional[bool] = None
+
+
+class PlatformOut(PlatformBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ---------------- PlatformKey ----------------
+class PlatformKeyBase(BaseModel):
+    api_key: str
+    label: str = ""
+    enabled: bool = True
+
+
+class PlatformKeyCreate(PlatformKeyBase):
+    platform_id: int
+
+
+class PlatformKeyUpdate(BaseModel):
+    api_key: Optional[str] = None
+    label: Optional[str] = None
+    enabled: Optional[bool] = None
+    is_active: Optional[bool] = None
+
+
+class PlatformKeyOut(PlatformKeyBase):
+    id: int
+    platform_id: int
+    is_active: bool = True
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PlatformDetailOut(PlatformOut):
+    platform_keys: List[PlatformKeyOut] = Field(default_factory=list)
+
+    class Config:
+        from_attributes = True
+
+
 # ---------------- Pool ----------------
 class PoolItemBase(BaseModel):
-    provider_id: int
+    # 支持 platform_id（新） 和 provider_id（兼容旧）
+    platform_id: Optional[int] = None
+    provider_id: Optional[int] = None
     model: str
     priority: int = 1
     weight: int = 1
@@ -53,7 +121,8 @@ class PoolItemCreate(PoolItemBase):
 class PoolItemOut(PoolItemBase):
     id: int
     pool_id: int
-    provider_name: Optional[str] = None  # 来自 join
+    platform_name: Optional[str] = None  # 来自 join
+    provider_name: Optional[str] = None  # 兼容旧
     # 费率：per 1M tokens
     free_input_price: float = 0
     free_output_price: float = 0
@@ -137,7 +206,9 @@ class RequestLogOut(BaseModel):
     id: int
     client_key_id: Optional[int]
     pool_item_id: Optional[int]
-    provider_id: Optional[int]
+    provider_id: Optional[int]  # 兼容旧数据
+    platform_id: Optional[int] = None
+    platform_key_id: Optional[int] = None
     # 客户端请求的 model（= pool.name，如 "auto"）
     model: str
     # 上游实际调用的模型名称（来自 PoolItem.model）
@@ -166,6 +237,8 @@ class RequestLogOut(BaseModel):
             client_key_id=log.client_key_id,
             pool_item_id=log.pool_item_id,
             provider_id=log.provider_id,
+            platform_id=getattr(log, 'platform_id', None),
+            platform_key_id=getattr(log, 'platform_key_id', None),
             model=log.model,
             upstream_model=upstream,
             pool_name=pool_nm,
@@ -257,7 +330,7 @@ class MessageResponse(BaseModel):
     message: str
 
 
-# ── Provider Health ───────────────────────────────────────────────
+# ── PlatformKey Health ──────────────────────────────────────────
 class RateLimitWindow(BaseModel):
     """单个时间窗口的用量"""
     rpm: int = 0
@@ -267,11 +340,14 @@ class RateLimitWindow(BaseModel):
 
 
 class ProviderHealthItem(BaseModel):
-    """单个 Provider 的健康状态"""
+    """单个 Provider 的健康状态（保留旧名，内部迁移到 PlatformKey）"""
     provider_id: int
     provider_name: str
     base_url: str
     is_active: bool
+    # 新增：platform_key_id 和 key_label
+    platform_key_id: Optional[int] = None
+    key_label: str = ""
     # 当前绑定的模型（来自 pool_item.model）
     model: Optional[str] = None
     # 滑动窗口（从 DB 实时查）
