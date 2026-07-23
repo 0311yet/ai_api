@@ -8,7 +8,7 @@ const auth = useAuthStore()
 
 const navItems = [
   { name: 'Dashboard', path: '/dashboard', icon: 'dashboard' },
-  { name: 'Providers', path: '/providers', icon: 'hub' },
+  { name: 'Platforms', path: '/platforms', icon: 'hub' },
   { name: 'Pools', path: '/pools', icon: 'database' },
   { name: 'Keys', path: '/keys', icon: 'key' },
   { name: 'Logs', path: '/logs', icon: 'receipt_long' },
