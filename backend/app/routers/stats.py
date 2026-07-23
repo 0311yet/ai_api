@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.middleware import verify_admin
-from app.models import RequestLog, ClientKey, Pool, Provider, DailyStats
+from app.models import RequestLog, ClientKey, Pool, Provider, DailyStats, PoolItem
 from app.schemas import (
     DashboardStats, TimeSeriesPoint, ModelStatRow, DailyStatsOut,
 )
@@ -58,6 +58,50 @@ async def get_dashboard_stats(session: AsyncSession = Depends(get_session)):
 
     success_rate = (success / total * 100) if total > 0 else 0
 
+    # 成本计算：根据 request_logs JOIN pool_items JOIN providers 聚合
+    # 按 provider.is_paid 选 free/paid 价，分别累加 free_cost / paid_cost
+    # cost = prompt_tokens/1e6 * input_price + completion_tokens/1e6 * output_price
+    # 在内存里聚合（SQLite 兼容性好、逻辑清晰）
+    cost_rows = (await session.execute(
+        select(
+            RequestLog.pool_item_id,
+            RequestLog.prompt_tokens,
+            RequestLog.completion_tokens,
+        )
+        .select_from(RequestLog)
+        .join(PoolItem, RequestLog.pool_item_id == PoolItem.id)
+        .join(Provider, PoolItem.provider_id == Provider.id)
+        .where(RequestLog.status == "success", RequestLog.pool_item_id.is_not(None))
+    )).all()
+
+    # 查所有涉及到的 PoolItem（含费率和 provider 的 is_paid）
+    pitem_ids = {r[0] for r in cost_rows}
+    item_map = {}
+    if pitem_ids:
+        items_data = (await session.execute(
+            select(PoolItem, Provider)
+            .join(Provider, PoolItem.provider_id == Provider.id)
+            .where(PoolItem.id.in_(pitem_ids))
+        )).all()
+        for item, prov in items_data:
+            item_map[item.id] = (item, prov)
+
+    free_cost = 0.0
+    paid_cost = 0.0
+    for pool_item_id, pt, ct in cost_rows:
+        entry = item_map.get(pool_item_id)
+        if not entry:
+            continue
+        item, prov = entry
+        if prov.is_paid:
+            in_price = item.paid_input_price or 0
+            out_price = item.paid_output_price or 0
+            paid_cost += (pt or 0) / 1_000_000 * in_price + (ct or 0) / 1_000_000 * out_price
+        else:
+            in_price = item.free_input_price or 0
+            out_price = item.free_output_price or 0
+            free_cost += (pt or 0) / 1_000_000 * in_price + (ct or 0) / 1_000_000 * out_price
+
     return DashboardStats(
         total_requests=total,
         success_count=success,
@@ -71,6 +115,8 @@ async def get_dashboard_stats(session: AsyncSession = Depends(get_session)):
         active_keys=active_keys,
         active_pools=active_pools,
         active_providers=active_providers,
+        free_cost=round(free_cost, 6),
+        paid_cost=round(paid_cost, 6),
     )
 
 

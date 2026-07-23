@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 
 from app.config import settings
 from app.database import init_db
-from app.routers import auth, providers, pools, keys, logs, stats, proxy, health
+from app.routers import auth, providers, pools, keys, logs, stats, proxy, health, rates
 
 
 @asynccontextmanager
@@ -49,6 +49,7 @@ app.include_router(keys.router)
 app.include_router(logs.router)
 app.include_router(stats.router)
 app.include_router(health.router)
+app.include_router(rates.router)
 
 app.include_router(proxy.router)
 

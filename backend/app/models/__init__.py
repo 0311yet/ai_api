@@ -18,6 +18,8 @@ class Provider(Base):
     api_key: Mapped[str] = mapped_column(String(500), nullable=False)
     models: Mapped[List] = mapped_column(JSON, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 是否为付费 API（True=付费，False=免费）。决定成本计算时用 paid 还是 free 价
+    is_paid: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -55,6 +57,11 @@ class PoolItem(Base):
     priority: Mapped[int] = mapped_column(Integer, default=1)
     weight: Mapped[int] = mapped_column(Integer, default=1)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 费率：per 1M tokens 的价格。free_* 对应免费 API，paid_* 对应付费 API
+    free_input_price: Mapped[float] = mapped_column(Float, default=0)
+    free_output_price: Mapped[float] = mapped_column(Float, default=0)
+    paid_input_price: Mapped[float] = mapped_column(Float, default=0)
+    paid_output_price: Mapped[float] = mapped_column(Float, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
     pool: Mapped["Pool"] = relationship(back_populates="pool_items")

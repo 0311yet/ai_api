@@ -24,10 +24,12 @@ class ProviderUpdate(BaseModel):
     api_key: Optional[str] = None
     models: Optional[List[str]] = None
     is_active: Optional[bool] = None
+    is_paid: Optional[bool] = None
 
 
 class ProviderOut(ProviderBase):
     id: int
+    is_paid: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -52,10 +54,23 @@ class PoolItemOut(PoolItemBase):
     id: int
     pool_id: int
     provider_name: Optional[str] = None  # 来自 join
+    # 费率：per 1M tokens
+    free_input_price: float = 0
+    free_output_price: float = 0
+    paid_input_price: float = 0
+    paid_output_price: float = 0
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class PoolItemPriceUpdate(BaseModel):
+    """单独更新某个 PoolItem 的费率"""
+    free_input_price: Optional[float] = None
+    free_output_price: Optional[float] = None
+    paid_input_price: Optional[float] = None
+    paid_output_price: Optional[float] = None
 
 
 class PoolBase(BaseModel):
@@ -191,6 +206,9 @@ class DashboardStats(BaseModel):
     active_keys: int
     active_pools: int
     active_providers: int
+    # 累计成本（根据 request_logs + pool_items 价格 + provider.is_paid 计算）
+    free_cost: float = 0
+    paid_cost: float = 0
 
 
 class TimeSeriesPoint(BaseModel):
