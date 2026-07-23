@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { NCard, NSpin, NTag, NEmpty, NProgress, NButton, useMessage } from 'naive-ui'
 import TopBar from '../components/TopBar.vue'
 import { healthAPI } from '../api'
@@ -48,28 +48,49 @@ function cooldownProgress(until: string | null): number {
   return Math.round(elapsed * 100)
 }
 
-async function load() {
-  loading.value = true
+const REFRESH_INTERVAL_MS = 3000
+let refreshTimer: ReturnType<typeof setInterval> | null = null
+const lastUpdated = ref<string>('')
+
+async function load(manual: boolean = false) {
+  if (manual) loading.value = true
   try {
     const { data } = await healthAPI.overview()
     pools.value = data.pools || []
     stickyActive.value = data.sticky_sessions_active || 0
+    lastUpdated.value = new Date().toLocaleTimeString()
   } catch (e: any) {
     message.error('加载失败: ' + (e?.message || '未知错误'))
     console.error(e)
   } finally {
-    loading.value = false
+    if (manual) loading.value = false
   }
 }
 
-onMounted(load)
+function manualRefresh() {
+  load(true)
+  // 手动刷新后重置 3s 倍表，避免点完快临近下一轮
+  if (refreshTimer) {
+    clearInterval(refreshTimer)
+    refreshTimer = setInterval(load, REFRESH_INTERVAL_MS)
+  }
+}
+
+onMounted(() => {
+  load(true)
+  refreshTimer = setInterval(load, REFRESH_INTERVAL_MS)
+})
+
+onUnmounted(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+})
 </script>
 
 <template>
   <div class="flex flex-col min-h-screen bg-background">
     <TopBar :crumbs="[{ label: 'Routing' }, { label: 'Health', active: true }]">
       <template #actions>
-        <NButton type="primary" size="small" @click="load" :loading="loading">
+        <NButton type="primary" size="small" @click="manualRefresh" :loading="loading">
           <template #icon>
             <span class="material-symbols-outlined text-base">refresh</span>
           </template>
@@ -81,8 +102,17 @@ onMounted(load)
     <div class="p-6 flex flex-col gap-5">
       <!-- Header -->
       <div>
-        <h1 class="text-[20px] font-semibold text-text-primary">Provider Health</h1>
-        <p class="text-sm text-text-secondary mt-0.5">Monitor upstream providers, rate limits, cooldowns, and penalties</p>
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <h1 class="text-[20px] font-semibold text-text-primary">Provider Health</h1>
+            <p class="text-sm text-text-secondary mt-0.5">Monitor upstream providers, rate limits, cooldowns, and penalties</p>
+          </div>
+          <div class="flex items-center gap-1.5 text-xs text-text-secondary font-mono">
+            <span class="w-1.5 h-1.5 rounded-full bg-success inline-block animate-pulse"></span>
+            <span class="text-success font-semibold">LIVE</span>
+            <span class="opacity-60">· auto-refresh 3s · updated {{ lastUpdated || '—' }}</span>
+          </div>
+        </div>
       </div>
 
       <!-- Sticky Sessions Banner -->
