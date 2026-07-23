@@ -32,13 +32,21 @@ async def list_platforms(session: AsyncSession = Depends(get_session)):
     result = await session.execute(q)
     platforms = result.scalars().all()
     
-    # 手动转成 list[PlatformOut] 以包含 platform_keys
-    out_list = []
-    for p in platforms:
-        out = PlatformOut.model_validate(p)
-        out.platform_keys = [PlatformKeyOut.model_validate(k) for k in p.platform_keys]
-        out_list.append(out)
-    return out_list
+    # 手动构造 PlatformOut 以包含 platform_keys
+    return [
+        PlatformOut(
+            id=p.id,
+            name=p.name,
+            base_url=p.base_url,
+            models=p.models,
+            is_paid=p.is_paid,
+            is_active=p.is_active,
+            created_at=p.created_at,
+            updated_at=p.updated_at,
+            platform_keys=[PlatformKeyOut.model_validate(k) for k in p.platform_keys],
+        )
+        for p in platforms
+    ]
 
 
 @router.post("", response_model=PlatformOut, status_code=201)
