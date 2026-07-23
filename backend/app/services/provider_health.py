@@ -343,13 +343,74 @@ async def _restore_cooldowns():
         result = await s.execute(
             select(ProviderCooldown).where(
                 ProviderCooldown.cooldown_until > datetime.now(timezone.utc)
-            )
         )
         for row in result.scalars().all():
             if row.provider_id in _PROVIDER_STATE:
                 st = _PROVIDER_STATE[row.provider_id]
                 st.cooldown_until = row.cooldown_until.timestamp()
                 st.strike_count = row.strike_count
+
+
+async def _restore_windows():
+    """启动时从 rate_limit_events 表回放最近 24h 事件，重填各 Provider 的滑动窗口。
+
+    保证容器重启后 RPD/TPD 不会归零。每分钟聚合成一个 bucket（与运行时行为一致），
+    bucket 时间戳 = 该分钟内首条事件的时间。
+    """
+    from app.models import RateLimitEvent
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=86400)
+    async with async_session() as s:
+        result = await s.execute(
+            select(
+                RateLimitEvent.provider_id,
+                RateLimitEvent.model,
+                RateLimitEvent.event_type,
+                RateLimitEvent.event_value,
+                RateLimitEvent.created_at,
+            ).where(RateLimitEvent.created_at >= cutoff)
+        )
+        # 按 (provider_id, model, minute) 聚合：request 求和、token 求和
+        # 每分钟只造一个 bucket，时间戳 = 该分钟内首条事件的真实时间
+        # 结构: {(pid, model): {minute_ts: [first_event_ts, req_sum, tok_sum]}}
+        agg: Dict[Tuple[int, str], Dict[int, list]] = {}
+        for pid, model, evtype, value, created in result.all():
+            if pid not in _PROVIDER_STATE:
+                continue
+            if created is None:
+                continue
+            # created 可能带 tz（UTC），统一转 unix ts
+            cts = created
+            if cts.tzinfo is None:
+                cts = cts.replace(tzinfo=timezone.utc)
+            ts = cts.timestamp()
+            minute_ts = int(ts // 60) * 60
+            key = (pid, model or "")
+            bucket_map = agg.setdefault(key, {})
+            entry = bucket_map.setdefault(minute_ts, [ts, 0, 0])  # [first_ts, req_sum, tok_sum]
+            entry[0] = min(entry[0], ts)  # 该分钟内最早事件时间
+            if evtype == "request":
+                entry[1] += int(value or 0)
+            elif evtype == "token":
+                entry[2] += int(value or 0)
+
+        # 填充到各 Provider 的 SlidingWindow
+        for (pid, model), bucket_map in agg.items():
+            if pid not in _PROVIDER_STATE:
+                continue
+            sw = _PROVIDER_STATE[pid].get_window(model)
+            # 按时间升序填充
+            for minute_ts in sorted(bucket_map.keys()):
+                first_ts, req_sum, tok_sum = bucket_map[minute_ts]
+                sw._buckets.append(MinuteBucket(
+                    ts=first_ts,
+                    request_count=req_sum,
+                    token_count=tok_sum,
+                ))
+
+        # 统计日志
+        total_buckets = sum(len(bm) for bm in agg.values())
+        providers_restored = len({pid for (pid, _) in agg.keys()})
+        print(f"[health] restored sliding windows: {providers_restored} providers, {total_buckets} minute-buckets")
 
 
 async def _persist_cooldowns():
@@ -420,6 +481,7 @@ StickySessionManager_instance = StickySessionManager()
 async def start_health_tasks():
     """启动所有后台任务（在 FastAPI lifespan startup 时调用）"""
     await _restore_cooldowns()
+    await _restore_windows()
     _BACKGROUND_TASKS.extend([
         asyncio.create_task(_bg_flusher(), name="health_flusher"),
         asyncio.create_task(_bg_cooldown_persister(), name="health_cooldown_persister"),
