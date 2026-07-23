@@ -45,7 +45,7 @@ async def authenticate_client(
             selectinload(ClientKey.pool)
             .selectinload(Pool.pool_items)
             .selectinload(PoolItem.platform)
-            .selectinload(PoolItem.platform.platform_keys)
+            .selectinload(Platform.platform_keys)
         )
         .where(ClientKey.key == key_str)
     )

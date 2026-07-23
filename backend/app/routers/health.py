@@ -41,7 +41,7 @@ async def health_overview(session: AsyncSession = Depends(get_session)):
     out_pools = []
 
     for pool in pools:
-        # 查询 PoolItem + Platform + PlatformKeys
+        # 查询 PoolItem + Platform + PlatformKeys（按 platform_id 而非 provider_id）
         rows_result = await session.execute(
             select(PoolItem, Platform)
             .join(Platform, PoolItem.platform_id == Platform.id)
@@ -57,7 +57,6 @@ async def health_overview(session: AsyncSession = Depends(get_session)):
             # 获取该 Platform 下所有 enabled 的 Keys
             enabled_keys = [k for k in platform.platform_keys if k.enabled and k.is_active]
             if not enabled_keys:
-                # 没有 enabled keys，显示 Platform 整体状态（取第一个 disabled key）
                 continue
 
             for key in enabled_keys:
@@ -86,7 +85,7 @@ async def health_overview(session: AsyncSession = Depends(get_session)):
 
                 health_items.append(ProviderHealthItem(
                     provider_id=key.id,  # 复用 provider_id 字段（兼容前端）
-                    provider_name=f"{platform.name} / {key.label or key.id}",
+                    provider_name=f"{platform.name} / {key.label or str(key.id)}",
                     base_url=platform.base_url,
                     is_active=key.is_active,
                     platform_key_id=key.id,
