@@ -34,18 +34,22 @@ async def _ensure_columns(conn):
     """为新增字段自动 ALTER TABLE ADD COLUMN（升级时调用，重复执行也安全）"""
     from sqlalchemy import text, inspect
 
-    def has_column(table: str, column: str) -> bool:
-        insp = inspect(conn)
-        return column in [c["name"] for c in insp.get_columns(table)]
+    def _do(sync_conn):
+        insp = inspect(sync_conn)
 
-    # providers.is_paid
-    if not has_column("providers", "is_paid"):
-        await conn.execute(text("ALTER TABLE providers ADD COLUMN is_paid BOOLEAN DEFAULT 0 NOT NULL"))
+        def has_column(table: str, column: str) -> bool:
+            return column in [c["name"] for c in insp.get_columns(table)]
 
-    # pool_items 的 4 个费率字段
-    for col in ["free_input_price", "free_output_price", "paid_input_price", "paid_output_price"]:
-        if not has_column("pool_items", col):
-            await conn.execute(text(f"ALTER TABLE pool_items ADD COLUMN {col} FLOAT DEFAULT 0 NOT NULL"))
+        #/providers.is_paid
+        if not has_column("providers", "is_paid"):
+            sync_conn.execute(text("ALTER TABLE providers ADD COLUMN is_paid BOOLEAN DEFAULT 0 NOT NULL"))
+
+        # pool_items 的 4 个费率字段
+        for col in ["free_input_price", "free_output_price", "paid_input_price", "paid_output_price"]:
+            if not has_column("pool_items", col):
+                sync_conn.execute(text(f"ALTER TABLE pool_items ADD COLUMN {col} FLOAT DEFAULT 0 NOT NULL"))
+
+    await conn.run_sync(_do)
 
 
 async def init_db():
