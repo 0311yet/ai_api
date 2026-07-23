@@ -352,6 +352,35 @@ async def _restore_cooldowns():
                 st.strike_count = row.strike_count
 
 
+async def _register_all_providers():
+    """启动时预注册所有 Provider + 活跃 PoolItem 到 _PROVIDER_STATE。
+
+    这样 _restore_windows 才能把 DB 中的历史事件填进对应 Provider 的滑动窗口。
+    （运行时是懒注册的，但那已经在请求进来了才发生，错过了启动时的批量恢复。）
+    """
+    from app.models import Provider, PoolItem, Pool
+    async with async_session() as s:
+        # 查所有 Provider 及其活跃 PoolItem（含 priority）
+        rows = (await s.execute(
+            select(Provider, PoolItem, Pool)
+            .join(PoolItem, PoolItem.provider_id == Provider.id)
+            .join(Pool, PoolItem.pool_id == Pool.id)
+            .where(PoolItem.is_active == True, Provider.is_active == True)
+        )).all()
+        for provider, pool_item, pool in rows:
+            if provider.id not in _PROVIDER_STATE:
+                _PROVIDER_STATE[provider.id] = ProviderState(
+                    provider_id=provider.id,
+                    provider_name=provider.name,
+                    base_url=provider.base_url,
+                    is_active=provider.is_active,
+                    base_priority=pool_item.priority,
+                )
+            else:
+                # 已存在的 state 保留运行时累积的状态（不覆盖）
+                pass
+
+
 async def _restore_windows():
     """启动时从 rate_limit_events 表回放最近 24h 事件，重填各 Provider 的滑动窗口。
 
@@ -481,6 +510,8 @@ StickySessionManager_instance = StickySessionManager()
 
 async def start_health_tasks():
     """启动所有后台任务（在 FastAPI lifespan startup 时调用）"""
+    # 预注册所有 Provider + 活跃 PoolItem 的 state，让后续 _restore_windows 能找到 PID
+    await _register_all_providers()
     await _restore_cooldowns()
     await _restore_windows()
     _BACKGROUND_TASKS.extend([
