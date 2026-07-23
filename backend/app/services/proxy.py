@@ -62,6 +62,14 @@ def check_model_allowed(client_key: ClientKey, model: str) -> bool:
     return model in client_key.allowed_models
 
 
+def resolve_pool_for_key(client_key: ClientKey, model: str) -> Optional[Pool]:
+    """从 client_key 绑定的 pool 找到实际的 Pool 实例"""
+    pool = client_key.pool
+    if not pool or not pool.is_active:
+        return None
+    return pool
+
+
 async def get_ordered_items(
     pool: Pool,
     strategy: str,
