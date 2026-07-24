@@ -436,7 +436,9 @@ async def _restore_windows():
         rows = result.all()
         seen_ids: set = set()
         for pk_id, *_ in rows:
-            seen_ids.add(pk_id)
+            # 跳过 platform_key_id 为 NULL 的旧数据（迁移期残留），无法关联任何 key
+            if pk_id is not None:
+                seen_ids.add(pk_id)
 
         # 为尚未注册的 PlatformKey（如无冷却、未在 _restore_cooldowns 注册）补注册空 state，
         # 否则下方的聚合循环会因为 `_PLATFORM_KEY_STATE` 没有对应条目而丢失历史窗口。
@@ -453,9 +455,11 @@ async def _restore_windows():
                     key_label=label or f"Key {pk_id}",
                 ))
 
-        # 按 (platform_key_id, model) 聚合事件
+        # 按 (platform_key_id, model) 聚合事件（pk_id 已保证非 None）
         agg: Dict[tuple[int, str], dict[int, list]] = {}
         for pk_id, model, evtype, value, created in rows:
+            if pk_id is None:
+                continue
             cts = created
             if cts.tzinfo is None:
                 cts = cts.replace(tzinfo=timezone.utc)
