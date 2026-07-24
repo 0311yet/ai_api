@@ -350,22 +350,27 @@ async def _flush_events_to_db():
         _EVENT_BUFFER.clear()
 
     async with async_session() as s:
+        now = datetime.now(timezone.utc)
         for (platform_key_id, model), data in events.items():
             # 记录请求事件
             if data["request"] > 0:
                 s.add(RateLimitEvent(
                     platform_key_id=platform_key_id,
+                    provider_id=0,               # 旧 schema NOT NULL 占位，迁移后移除
                     model=model,
                     event_type="request",
                     event_value=data["request"],
+                    created_at=now,
                 ))
             # 记录 token 事件
             if data["token"] > 0:
                 s.add(RateLimitEvent(
                     platform_key_id=platform_key_id,
+                    provider_id=0,               # 旧 schema NOT NULL 占位，迁移后移除
                     model=model,
                     event_type="token",
                     event_value=data["token"],
+                    created_at=now,
                 ))
         await s.commit()
 
