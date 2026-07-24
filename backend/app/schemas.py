@@ -66,7 +66,8 @@ class PlatformKeyBase(BaseModel):
 
 
 class PlatformKeyCreate(PlatformKeyBase):
-    platform_id: int
+    # platform_id comes from the URL path, not the request body
+    platform_id: Optional[int] = None
 
 
 class PlatformKeyUpdate(BaseModel):
