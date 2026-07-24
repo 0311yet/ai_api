@@ -7,6 +7,7 @@ const { message } = createDiscreteApi(['message'])
 // ── health API ──
 export const healthAPI = {
   overview: () => api.get('/admin/health/overview'),
+  platforms: () => api.get('/admin/health/platforms'),
   rateLimit: (providerId: number) => api.get(`/admin/health/rate-limit/${providerId}`),
 }
 

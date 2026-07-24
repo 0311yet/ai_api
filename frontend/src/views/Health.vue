@@ -6,7 +6,7 @@ import { healthAPI } from '../api'
 
 const loading = ref(false)
 const message = useMessage()
-const pools = ref<any[]>([])
+const platforms = ref<any[]>([])
 const stickyActive = ref(0)
 
 interface KeyHealth {
@@ -17,10 +17,7 @@ interface KeyHealth {
   cooldown_until: string | null
   strike_count: number
   penalty_score: number
-  effective_priority: number
 }
-
-// interfaces inlined via :any in template
 
 function getStatus(k: KeyHealth) {
   if (!k.is_active) return { type: 'warning', label: 'Disabled' } as const
@@ -56,8 +53,8 @@ const lastUpdated = ref<string>('')
 async function load(manual: boolean = false) {
   if (manual) loading.value = true
   try {
-    const { data } = await healthAPI.overview()
-    pools.value = data.pools || []
+    const { data } = await healthAPI.platforms()
+    platforms.value = data.platforms || []
     stickyActive.value = data.sticky_sessions_active || 0
     lastUpdated.value = new Date().toLocaleTimeString()
   } catch (e: any) {
@@ -106,8 +103,8 @@ onUnmounted(() => {
           <div>
             <h1 class="text-[20px] font-semibold text-text-primary">Platform Health</h1>
             <p class="text-sm text-text-secondary mt-0.5">
-              Monitor platforms, rate limits, cooldowns, and penalties.
-              Each model shows all available keys — backend auto-selects on each request.
+              监控所有平台 API Keys 的用量、限速与健康状态。
+              无模型分层，每个 Key 显示其所有模型的聚合数据。
             </p>
           </div>
           <div class="flex items-center gap-1.5 text-xs text-text-secondary font-mono">
@@ -131,131 +128,111 @@ onUnmounted(() => {
       <NSpin v-if="loading" class="self-center py-16" size="large" />
 
       <template v-else>
-        <!-- Pools -->
+        <!-- Platforms -->
         <NCard
-          v-for="pool in pools"
-          :key="pool.pool_id"
+          v-for="platform in platforms"
+          :key="platform.platform_id"
           size="small"
           :bordered="true"
           :content-style="{ padding: '0' }"
           class="!border-border"
         >
           <template #header>
-            <div class="flex items-center gap-2 flex-wrap">
-              <span class="font-semibold text-sm text-text-primary">{{ pool.pool_name }}</span>
-              <NTag size="tiny" type="info">{{ pool.strategy }}</NTag>
-              <NTag size="tiny" :type="(pool.items?.length || 0) > 0 ? 'success' : 'warning'">
-                {{ pool.items?.length || 0 }} model(s)
+            <div class="flex items-center gap-3 flex-wrap">
+              <span class="font-semibold text-sm text-text-primary">{{ platform.platform_name }}</span>
+              <span class="font-mono text-[12px] text-text-secondary truncate max-w-md" :title="platform.base_url">
+                {{ platform.base_url }}
+              </span>
+              <NTag size="tiny" :type="(platform.keys?.length || 0) > 0 ? 'success' : 'warning'">
+                {{ platform.keys?.length || 0 }} key(s)
               </NTag>
             </div>
           </template>
 
           <!-- Empty state -->
           <NEmpty
-            v-if="!pool.items?.length"
+            v-if="!platform.keys?.length"
             size="small"
-            description="No models in this pool. Add models in Pools management."
+            description="No active keys in this platform."
             class="py-8"
           />
 
-          <!-- Pool item grid -->
+          <!-- Keys grid -->
           <div
             v-else
             class="grid gap-3 p-4"
-            :style="{ gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }"
+            :style="{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }"
           >
-            <!-- Each PoolItem = Platform + Model combination -->
             <div
-              v-for="item in pool.items"
-              :key="item.pool_item_id"
+              v-for="k in platform.keys"
+              :key="k.platform_key_id"
               class="bg-surface-container-lowest border border-border rounded-xl overflow-hidden"
             >
-              <!-- PoolItem header -->
+              <!-- Key header -->
               <div class="px-4 pt-4 pb-3 border-b border-border">
-                <div class="flex items-center gap-1.5 mb-1.5">
-                  <NTag size="small" type="info">Platform #{{ item.platform_id }}</NTag>
-                  <NTag size="small" :type="item.is_active ? 'success' : 'warning'" round>
-                    {{ item.is_active ? 'Active' : 'Disabled' }}
-                  </NTag>
-                  <span class="ml-auto text-[11px] text-text-secondary font-mono">
-                    prio {{ item.priority }}
+                <div class="flex items-center gap-2 mb-2">
+                  <span class="font-mono text-[12px] text-text-secondary">#{{ k.platform_key_id }}</span>
+                  <NTag size="small" type="info" round>key-{{ k.key_label }}</NTag>
+                  <NTag size="small" :type="getStatus(k).type" round>{{ getStatus(k).label }}</NTag>
+                  <span v-if="!k.is_active" class="ml-auto">
+                    <NTag size="tiny" type="warning">Disabled</NTag>
                   </span>
-                </div>
-                <div class="font-semibold text-sm text-text-primary truncate">{{ item.platform_name }}</div>
-                <div class="font-mono text-[13px] text-primary font-semibold mt-1">{{ item.model }}</div>
-                <div class="font-mono text-[11px] text-text-secondary truncate mt-0.5" :title="item.base_url">
-                  {{ item.base_url }}
                 </div>
               </div>
 
-              <!-- Keys list -->
-              <div class="px-4 py-3 space-y-2">
-                <div
-                  v-for="k in item.available_keys"
-                  :key="k.platform_key_id"
-                  class="bg-surface-container-low rounded-lg p-3"
-                >
-                  <!-- Key header -->
-                  <div class="flex items-center gap-1.5 mb-2">
-                    <span class="font-mono text-[11px] text-text-secondary">#{{ k.platform_key_id }}</span>
-                    <NTag size="tiny" type="info" round>key-{{ k.key_label }}</NTag>
-                    <NTag size="tiny" :type="getStatus(k).type" round>{{ getStatus(k).label }}</NTag>
+              <!-- Rate window -->
+              <div class="px-4 py-3">
+                <div class="grid grid-cols-4 gap-2 text-[11px] mb-3">
+                  <div class="text-center">
+                    <div class="font-mono font-bold text-[15px] text-text-primary">{{ k.rate_window.rpm }}</div>
+                    <div class="text-text-secondary">RPM</div>
                   </div>
-
-                  <!-- Rate window -->
-                  <div class="grid grid-cols-4 gap-1 text-[11px] mb-2">
-                    <div class="text-center">
-                      <div class="font-mono font-bold text-text-primary">{{ k.rate_window.rpm }}</div>
-                      <div class="text-text-secondary">RPM</div>
-                    </div>
-                    <div class="text-center">
-                      <div class="font-mono font-bold text-text-primary">{{ k.rate_window.rpd }}</div>
-                      <div class="text-text-secondary">RPD</div>
-                    </div>
-                    <div class="text-center">
-                      <div class="font-mono font-bold text-text-primary">{{ k.rate_window.tpm }}</div>
-                      <div class="text-text-secondary">TPM</div>
-                    </div>
-                    <div class="text-center">
-                      <div class="font-mono font-bold text-text-primary">{{ k.rate_window.tpd }}</div>
-                      <div class="text-text-secondary">TPD</div>
-                    </div>
+                  <div class="text-center">
+                    <div class="font-mono font-bold text-[15px] text-text-primary">{{ k.rate_window.rpd }}</div>
+                    <div class="text-text-secondary">RPD</div>
                   </div>
-
-                  <!-- Penalty & priority -->
-                  <div class="grid grid-cols-2 gap-2 mb-2">
-                    <div class="bg-surface-container-lowest p-1.5 rounded text-center">
-                      <div class="text-[10px] text-text-secondary">Effective Prio</div>
-                      <div class="font-mono text-[13px] font-bold text-text-primary">{{ k.effective_priority }}</div>
-                    </div>
-                    <div class="bg-surface-container-lowest p-1.5 rounded text-center">
-                      <div class="text-[10px] text-text-secondary">Penalty</div>
-                      <div class="font-mono text-[13px] font-bold"
-                        :class="k.penalty_score === 0 ? 'text-success' : k.penalty_score <= 2 ? 'text-warning' : 'text-error'">
-                        {{ k.penalty_score }}
-                      </div>
-                    </div>
+                  <div class="text-center">
+                    <div class="font-mono font-bold text-[15px] text-text-primary">{{ k.rate_window.tpm }}</div>
+                    <div class="text-text-secondary">TPM</div>
                   </div>
+                  <div class="text-center">
+                    <div class="font-mono font-bold text-[15px] text-text-primary">{{ k.rate_window.tpd }}</div>
+                    <div class="text-text-secondary">TPD</div>
+                  </div>
+                </div>
 
-                  <!-- Cooldown -->
-                  <div v-if="k.cooldown_until" class="mt-1">
-                    <div class="flex items-center justify-between text-[10px] mb-0.5">
-                      <span class="text-error font-semibold">Cooldown</span>
-                      <span class="text-error font-mono font-bold">{{ cooldownRemaining(k.cooldown_until) }}</span>
-                    </div>
-                    <NProgress
-                      type="line"
-                      :percentage="cooldownProgress(k.cooldown_until)"
-                      :height="4"
-                      :border-radius="2"
-                      :fill-border-radius="2"
-                      :show-indicator="false"
-                      :processing="true"
-                      :rail-color="'#2e2e42'"
-                    />
-                    <div v-if="k.strike_count > 0" class="text-[10px] text-warning mt-0.5">
-                      ⚠ {{ k.strike_count }} strike(s)
-                    </div>
+                <!-- Penalty -->
+                <div class="flex items-center justify-between text-[11px] mb-2">
+                  <span class="text-text-secondary">Penalty</span>
+                  <span
+                    class="font-mono font-bold"
+                    :class="k.penalty_score === 0 ? 'text-success' : k.penalty_score <= 2 ? 'text-warning' : 'text-error'"
+                  >{{ k.penalty_score }}</span>
+                </div>
+                <div v-if="k.strike_count > 0" class="flex items-center justify-between text-[11px] mb-2">
+                  <span class="text-text-secondary">Strikes</span>
+                  <span class="font-mono font-bold text-warning">{{ k.strike_count }}</span>
+                </div>
+
+                <!-- Cooldown -->
+                <div v-if="k.cooldown_until" class="mt-2">
+                  <div class="flex items-center justify-between text-[11px] mb-1">
+                    <span class="text-error font-semibold">Cooldown</span>
+                    <span class="text-error font-mono font-bold">{{ cooldownRemaining(k.cooldown_until) }}</span>
+                  </div>
+                  <NProgress
+                    type="line"
+                    :percentage="cooldownProgress(k.cooldown_until)"
+                    :height="5"
+                    :border-radius="3"
+                    :fill-border-radius="3"
+                    :show-indicator="false"
+                    :processing="true"
+                    :rail-color="'#2e2e42'"
+                    :fill-color="'#f85149'"
+                  />
+                  <div v-if="k.strike_count > 0" class="text-[11px] text-warning mt-1">
+                    ⚠ {{ k.strike_count }} strike(s)
                   </div>
                 </div>
               </div>
@@ -264,7 +241,7 @@ onUnmounted(() => {
         </NCard>
 
         <!-- Global empty state -->
-        <NEmpty v-if="!pools.length" description="No pools configured." />
+        <NEmpty v-if="!platforms.length" description="No platforms configured." />
       </template>
     </div>
   </div>

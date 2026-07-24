@@ -377,3 +377,28 @@ class HealthOverview(BaseModel):
     """Provider 健康总览"""
     pools: List[PoolHealthOut]
     sticky_sessions_active: int
+
+
+class PlatformHealthKeyItem(BaseModel):
+    """平台下的单个 Key 视图（聚合所有模型）"""
+    platform_key_id: int
+    key_label: str = ""
+    is_active: bool = True
+    rate_window: RateLimitWindow
+    cooldown_until: Optional[str] = None
+    strike_count: int = 0
+    penalty_score: int = 0
+
+
+class PlatformHealthItem(BaseModel):
+    """单个平台的健康视图"""
+    platform_id: int
+    platform_name: str
+    base_url: str
+    keys: List[PlatformHealthKeyItem] = Field(default_factory=list)
+
+
+class PlatformsHealthOut(BaseModel):
+    """按平台分组的健康总览（无模型层）"""
+    platforms: List[PlatformHealthItem]
+    sticky_sessions_active: int

@@ -18,7 +18,10 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_session
 from app.models import Pool, PoolItem, Platform, PlatformKey
-from app.schemas import KeyHealthItem, PoolItemHealthItem, RateLimitWindow, PoolHealthOut, HealthOverview
+from app.schemas import (
+    KeyHealthItem, PoolItemHealthItem, RateLimitWindow, PoolHealthOut,
+    HealthOverview, PlatformsHealthOut, PlatformHealthItem, PlatformHealthKeyItem,
+)
 from app.services import provider_health as ph
 
 router = APIRouter(prefix="/admin/health", tags=["health"])
@@ -113,6 +116,78 @@ async def health_overview(session: AsyncSession = Depends(get_session)):
 
     return HealthOverview(
         pools=out_pools,
+        sticky_sessions_active=ph.StickySessionManager_instance.count(),
+    )
+
+
+@router.get("/platforms", response_model=PlatformsHealthOut)
+async def health_platforms(session: AsyncSession = Depends(get_session)):
+    """
+    按平台分组的健康总览（无模型层）：
+
+    result = await session.execute(
+        select(Platform).options(selectinload(Platform.platform_keys)).order_by(Platform.name)
+    )
+    platforms = result.scalars().all()
+    out_platforms = []
+
+    for platform in platforms:
+        enabled_keys = [k for k in platform.platform_keys if k.enabled and k.is_active]
+        if not enabled_keys:
+            continue
+
+        key_health_list = []
+        for key in enabled_keys:
+            state = ph.get_platform_key_state(key.id)
+            if state is None:
+                state = ph.PlatformKeyHealthState(
+                    platform_key_id=key.id,
+                    platform_id=platform.id,
+                    key_label=key.label,
+                )
+                ph.register_platform_key_state(state)
+
+            # 聚合该 Key 下所有模型的滑动窗口
+            total_rpm = 0
+            total_rpd = 0
+            total_tpm = 0
+            total_tpd = 0
+            for model, win in state.windows.items():
+                total_rpm += win.count(60)
+                total_rpd += win.count(86400)
+                total_tpm += win.tokens(60)
+                total_tpd += win.tokens(86400)
+
+            cooldown_until = None
+            if state.cooldown_until and state.cooldown_until > time.time():
+                cooldown_until = datetime.fromtimestamp(
+                    state.cooldown_until, tz=timezone.utc
+                ).isoformat()
+
+            key_health_list.append(PlatformHealthKeyItem(
+                platform_key_id=key.id,
+                key_label=key.label or str(key.id),
+                is_active=key.is_active,
+                rate_window=RateLimitWindow(
+                    rpm=total_rpm,
+                    rpd=total_rpd,
+                    tpm=total_tpm,
+                    tpd=total_tpd,
+                ),
+                cooldown_until=cooldown_until,
+                strike_count=state.strike_count,
+                penalty_score=state.penalty_score,
+            ))
+
+        out_platforms.append(PlatformHealthItem(
+            platform_id=platform.id,
+            platform_name=platform.name,
+            base_url=platform.base_url,
+            keys=key_health_list,
+        ))
+
+    return PlatformsHealthOut(
+        platforms=out_platforms,
         sticky_sessions_active=ph.StickySessionManager_instance.count(),
     )
 
