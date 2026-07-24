@@ -117,6 +117,35 @@ async def health_overview(session: AsyncSession = Depends(get_session)):
     )
 
 
+@router.get("/debug/state")
+async def debug_state():
+    """临时 debug 端点：暴露内部 in-memory 状态（生产环境应删除）"""
+    from app.services import provider_health as ph
+    return {
+        "registered_keys": list(ph._PLATFORM_KEY_STATE.keys()),
+        "event_buffer": {f"{pk_id}|{model}": v for (pk_id, model), v in ph._EVENT_BUFFER.items()},
+        "buffer_lock": ph._EVENT_BUFFER_LOCK is not None,
+        "bg_tasks_count": len(ph._BACKGROUND_TASKS),
+        "sticky_active": ph.StickySessionManager_instance.count(),
+        "key_details": {
+            pk_id: {
+                "key_label": state.key_label,
+                "windows": {
+                    model: {
+                        "rpm": sw.count(60),
+                        "rpd": sw.count(86400),
+                        "tpm": sw.tokens(60),
+                        "tpd": sw.tokens(86400),
+                    }
+                    for model, sw in state.windows.items()
+                },
+                "cooldown_until": state.cooldown_until,
+                "strike_count": state.strike_count,
+            }
+            for pk_id, state in ph._PLATFORM_KEY_STATE.items()
+        },
+    }
+
 @router.get("/rate-limit/{platform_key_id}")
 async def platform_key_rate_limit(
     platform_key_id: int,
