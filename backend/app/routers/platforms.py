@@ -68,7 +68,12 @@ async def create_platform(data: PlatformCreate, session: AsyncSession = Depends(
     )
     session.add(platform)
     await session.commit()
-    await session.refresh(platform)
+    # Reload with platform_keys eager-loaded for response_model serialization
+    result = await session.execute(
+        select(Platform).where(Platform.id == platform.id)
+        .options(selectinload(Platform.platform_keys))
+    )
+    platform = result.scalar_one()
     return platform
 
 
@@ -99,7 +104,12 @@ async def update_platform(
     for k, v in data.model_dump(exclude_unset=True).items():
         setattr(platform, k, v)
     await session.commit()
-    await session.refresh(platform)
+    # Reload with platform_keys eager-loaded for response_model serialization
+    result = await session.execute(
+        select(Platform).where(Platform.id == platform_id)
+        .options(selectinload(Platform.platform_keys))
+    )
+    platform = result.scalar_one()
     return platform
 
 
