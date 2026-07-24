@@ -433,12 +433,29 @@ async def _restore_windows():
                 RateLimitEvent.created_at,
             ).where(RateLimitEvent.created_at >= cutoff)
         )
+        rows = result.all()
+        seen_ids: set = set()
+        for pk_id, *_ in rows:
+            seen_ids.add(pk_id)
+
+        # 为尚未注册的 PlatformKey（如无冷却、未在 _restore_cooldowns 注册）补注册空 state，
+        # 否则下方的聚合循环会因为 `_PLATFORM_KEY_STATE` 没有对应条目而丢失历史窗口。
+        missing_ids = [i for i in seen_ids if i not in _PLATFORM_KEY_STATE]
+        if missing_ids:
+            pk_result = await s.execute(
+                select(PlatformKey.id, PlatformKey.platform_id, PlatformKey.label)
+                .where(PlatformKey.id.in_(missing_ids))
+            )
+            for pk_id, platform_id, label in pk_result:
+                register_platform_key_state(PlatformKeyHealthState(
+                    platform_key_id=pk_id,
+                    platform_id=platform_id,
+                    key_label=label or f"Key {pk_id}",
+                ))
 
         # 按 (platform_key_id, model) 聚合事件
         agg: Dict[tuple[int, str], dict[int, list]] = {}
-        for pk_id, model, evtype, value, created in result.all():
-            if pk_id not in _PLATFORM_KEY_STATE:
-                continue
+        for pk_id, model, evtype, value, created in rows:
             cts = created
             if cts.tzinfo is None:
                 cts = cts.replace(tzinfo=timezone.utc)
@@ -457,8 +474,6 @@ async def _restore_windows():
         total_providers = 0
         total_buckets = 0
         for (pk_id, model_key), bucket_map in agg.items():
-            if pk_id not in _PLATFORM_KEY_STATE:
-                continue
             total_providers += 1
             sw = _PLATFORM_KEY_STATE[pk_id].get_window(model_key)
             for minute_ts in sorted(bucket_map.keys()):
