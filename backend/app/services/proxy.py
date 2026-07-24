@@ -165,7 +165,6 @@ async def proxy_json_request(
                     pt = usage.get("prompt_tokens", 0)
                     ct = usage.get("completion_tokens", 0)
                     total = pt + ct
-                    print(f"[PROXY DEBUG] record_request pk={platform_key_id} model={pool_item.model!r} total={total} pool_model={pool_item.model!r} body_model={body.get('model')!r}")
                     if total > 0:
                         await ph.record_request(platform_key_id, pool_item.model, total)
                     return (

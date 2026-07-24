@@ -12,12 +12,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session, async_session
-from app.services.proxy import (
-    authenticate_client, check_model_allowed, resolve_pool_for_key,
-    proxy_json_request, proxy_stream_request,
-    make_log, increment_key_usage, list_available_models,
-    is_multi_turn, StickySessionManager,
-)
+from app.services import proxy as proxy_svc
+from app.services import provider_health as ph
 
 router = APIRouter(prefix="/v1", tags=["proxy"])
 
@@ -48,7 +44,7 @@ def _first_user_message(body: dict) -> str:
 @router.get("/models")
 async def get_models(request: Request, session: AsyncSession = Depends(get_session)):
     """列出所有 active 的 pool 作为可用 model（支持 OpenAI / Anthropic 格式协商）"""
-    pools = await list_available_models(session)
+    pools = await proxy_svc.list_available_models(session)
     
     # Anthropic 客户端发 anthropic-version header，返回 Anthropic 格式
     is_anthropic = "anthropic-version" in request.headers
@@ -69,7 +65,7 @@ async def get_models(request: Request, session: AsyncSession = Depends(get_sessi
 @router.post("/chat/completions")
 async def chat_completions(request: Request, session: AsyncSession = Depends(get_session)):
     auth = request.headers.get("authorization", "")
-    client_key = await authenticate_client(session, auth)
+    client_key = await proxy_svc.authenticate_client(session, auth)
     if not client_key:
         raise HTTPException(401, "Invalid client key")
 
@@ -77,10 +73,10 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
     model = body.get("model")
     if not model:
         raise HTTPException(400, "model is required")
-    if not check_model_allowed(client_key, model):
+    if not proxy_svc.check_model_allowed(client_key, model):
         raise HTTPException(403, f"Model '{model}' not allowed for this key")
 
-    pool = resolve_pool_for_key(client_key, model)
+    pool = proxy_svc.resolve_pool_for_key(client_key, model)
     if not pool:
         raise HTTPException(404, f"No active pool matching model '{model}'")
 
@@ -88,13 +84,13 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
     ip = _client_ip(request)
     first_msg = _first_user_message(body)
     is_stream = body.get("stream", False)
-    multi_turn = is_multi_turn(body.get("messages", []))
+    multi_turn = proxy_svc.is_multi_turn(body.get("messages", []))
     session_key = None
     sticky_platform_key_id = None
     if multi_turn and first_msg:
-        session_key = StickySessionManager.make_key(ip, first_msg)
+        session_key = proxy_svc.StickySessionManager.make_key(ip, first_msg)
         valid_ids = {item.platform_key_id for item in pool.pool_items if item.is_active and item.platform_key_id}
-        resolved = StickySessionManager.resolve(session_key, valid_ids)
+        resolved = proxy_svc.StickySessionManager.resolve(session_key, valid_ids)
         if resolved:
             sticky_platform_key_id = resolved[0]
 
@@ -104,13 +100,13 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
     extra_headers = {}
 
     if is_stream:
-        code, gen, meta_container = await proxy_stream_request(pool, body, sticky_platform_key_id)
+        code, gen, meta_container = await proxy_svc.proxy_stream_request(pool, body, sticky_platform_key_id)
         if code != 200:
-            log = make_log(client_key_id, model, request_id, "failed", {
+            log = proxy_svc.make_log(client_key_id, model, request_id, "failed", {
                 "latency_ms": 0, "ttft_ms": 0, "error": "All upstreams failed",
             }, ip=ip, ua=ua, request_body=json.dumps(body), is_stream=True)
             session.add(log)
-            await increment_key_usage(client_key_id, 0)
+            await proxy_svc.increment_key_usage(client_key_id, 0)
             await session.commit()
             return JSONResponse(status_code=502, content={"error": {"message": "All upstreams failed"}})
 
@@ -124,11 +120,14 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
             finally:
                 meta = meta_container or {}
                 total_tokens = meta.get("total_tokens", 0)
+                pk_id = meta.get("platform_key_id")
+                if pk_id and total_tokens > 0:
+                    await ph.record_request(pk_id, model, total_tokens)
                 # Sticky Session：成功后绑定
                 if session_key and meta.get("platform_key_id"):
-                    StickySessionManager.bind(session_key, meta["platform_key_id"], model)
+                    proxy_svc.StickySessionManager.bind(session_key, meta["platform_key_id"], model)
                 async with async_session() as s:
-                    log = make_log(
+                    log = proxy_svc.make_log(
                         client_key_id, model, request_id, "success", meta,
                         ip=ip, ua=ua,
                         request_body=json.dumps(body),
@@ -137,13 +136,13 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
                     )
                     s.add(log)
                     await s.commit()
-                await increment_key_usage(client_key_id, total_tokens)
+                await proxy_svc.increment_key_usage(client_key_id, total_tokens)
 
         return StreamingResponse(stream_with_log(), media_type="text/event-stream")
 
     else:
-        code, resp_data, meta = await proxy_json_request(pool, body, sticky_platform_key_id)
-        log = make_log(
+        code, resp_data, meta = await proxy_svc.proxy_json_request(pool, body, sticky_platform_key_id)
+        log = proxy_svc.make_log(
             client_key_id, model, request_id,
             "success" if code == 200 else "failed",
             meta, ip=ip, ua=ua,
@@ -153,10 +152,10 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
         )
         session.add(log)
         await session.commit()
-        await increment_key_usage(client_key_id, meta.get("total_tokens", 0))
+        await proxy_svc.increment_key_usage(client_key_id, meta.get("total_tokens", 0))
         # Sticky Session：成功后绑定
         if code == 200 and session_key and meta.get("platform_key_id"):
-            StickySessionManager.bind(session_key, meta["platform_key_id"], model)
+            proxy_svc.StickySessionManager.bind(session_key, meta["platform_key_id"], model)
         # 注入响应头
         extra_headers = meta.get("headers", {})
         if code == 200:
@@ -269,7 +268,7 @@ def _stream_openai_to_anthropic(raw_bytes: bytes, model: str) -> bytes:
 async def anthropic_messages(request: Request, session: AsyncSession = Depends(get_session)):
     """Anthropic /v1/messages 端点：转换为 OpenAI 格式代理给上游"""
     auth = request.headers.get("authorization", "")
-    client_key = await authenticate_client(session, auth)
+    client_key = await proxy_svc.authenticate_client(session, auth)
     if not client_key:
         raise HTTPException(401, "Invalid client key")
 
@@ -277,10 +276,10 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
     model = body.get("model")
     if not model:
         raise HTTPException(400, "model is required")
-    if not check_model_allowed(client_key, model):
+    if not proxy_svc.check_model_allowed(client_key, model):
         raise HTTPException(403, f"Model '{model}' not allowed for this key")
 
-    pool = resolve_pool_for_key(client_key, model)
+    pool = proxy_svc.resolve_pool_for_key(client_key, model)
     if not pool:
         raise HTTPException(404, f"No active pool matching model '{model}'")
 
@@ -288,13 +287,13 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
     ip = _client_ip(request)
     first_msg = _first_user_message(body)
     is_stream = body.get("stream", False)
-    multi_turn = is_multi_turn(body.get("messages", []))
+    multi_turn = proxy_svc.is_multi_turn(body.get("messages", []))
     session_key = None
     sticky_provider_id = None
     if multi_turn and first_msg:
-        session_key = StickySessionManager.make_key(ip, first_msg)
+        session_key = proxy_svc.StickySessionManager.make_key(ip, first_msg)
         valid_ids = {item.platform_key_id for item in pool.pool_items if item.is_active and item.platform_key_id}
-        resolved = StickySessionManager.resolve(session_key, valid_ids)
+        resolved = proxy_svc.StickySessionManager.resolve(session_key, valid_ids)
         if resolved:
             sticky_provider_id = resolved[0]
 
@@ -306,13 +305,13 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
     extra_headers = {}
 
     if is_stream:
-        code, gen, meta_container = await proxy_stream_request(pool, openai_body, sticky_provider_id)
+        code, gen, meta_container = await proxy_svc.proxy_stream_request(pool, openai_body, sticky_provider_id)
         if code != 200:
-            log = make_log(client_key_id, model, request_id, "failed", {
+            log = proxy_svc.make_log(client_key_id, model, request_id, "failed", {
                 "latency_ms": 0, "ttft_ms": 0, "error": "All upstreams failed",
             }, ip=ip, ua=ua, request_body=raw_request_body, is_stream=True)
             session.add(log)
-            await increment_key_usage(client_key_id, 0)
+            await proxy_svc.increment_key_usage(client_key_id, 0)
             await session.commit()
             return JSONResponse(
                 status_code=502,
@@ -333,18 +332,21 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
             finally:
                 meta = meta_container or {}
                 total_tokens = meta.get("total_tokens", 0)
+                pk_id = meta.get("platform_key_id")
+                if pk_id and total_tokens > 0:
+                    await ph.record_request(pk_id, model, total_tokens)
                 if session_key and meta.get("platform_key_id"):
-                    StickySessionManager.bind(session_key, meta["platform_key_id"], model)
+                    proxy_svc.StickySessionManager.bind(session_key, meta["platform_key_id"], model)
                 async with async_session() as s:
                     combined = b"".join(yield_buffer).decode("utf-8", errors="replace")[:5000]
-                    log = make_log(
+                    log = proxy_svc.make_log(
                         client_key_id, model, request_id, "success", meta,
                         ip=ip, ua=ua, request_body=raw_request_body,
                         response_body=combined, is_stream=True,
                     )
                     s.add(log)
                     await s.commit()
-                await increment_key_usage(client_key_id, total_tokens)
+                await proxy_svc.increment_key_usage(client_key_id, total_tokens)
 
         return StreamingResponse(
             stream_with_log(),
@@ -352,9 +354,9 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
             headers={"x-request-id": request_id},
         )
     else:
-        code, resp_data, meta = await proxy_json_request(pool, openai_body, sticky_provider_id)
+        code, resp_data, meta = await proxy_svc.proxy_json_request(pool, openai_body, sticky_provider_id)
         anthropic_resp = _openai_to_anthropic(resp_data, model, request_id)
-        log = make_log(
+        log = proxy_svc.make_log(
             client_key_id, model, request_id,
             "success" if code == 200 else "failed",
             meta, ip=ip, ua=ua,
@@ -364,9 +366,9 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
         )
         session.add(log)
         await session.commit()
-        await increment_key_usage(client_key_id, meta.get("total_tokens", 0))
+        await proxy_svc.increment_key_usage(client_key_id, meta.get("total_tokens", 0))
         if code == 200 and session_key and meta.get("platform_key_id"):
-            StickySessionManager.bind(session_key, meta["platform_key_id"], model)
+            proxy_svc.StickySessionManager.bind(session_key, meta["platform_key_id"], model)
         extra_headers = meta.get("headers", {})
         if code == 200:
             return JSONResponse(content=anthropic_resp, headers=extra_headers)
