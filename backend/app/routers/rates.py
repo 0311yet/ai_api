@@ -39,33 +39,6 @@ async def list_rates(session: AsyncSession = Depends(get_session)):
     return out
 
 
-@router.put("/{item_id}", response_model=PoolItemOut)
-async def update_rate(
-    item_id: int,
-    data: PoolItemPriceUpdate,
-    session: AsyncSession = Depends(get_session),
-):
-    """更新某个 PoolItem 的费率字段（只改提供的字段）"""
-    item = (
-        await session.execute(
-            select(PoolItem)
-            .options(selectinload(PoolItem.provider))
-            .where(PoolItem.id == item_id)
-        )
-    ).scalar_one_or_none()
-    if not item:
-        raise HTTPException(404, "Pool item not found")
-
-    for k, v in data.model_dump(exclude_unset=True).items():
-        setattr(item, k, v)
-    await session.commit()
-    await session.refresh(item)
-
-    d = PoolItemOut.model_validate(item).model_dump()
-    d["provider_name"] = item.provider.name if item.provider else None
-    return PoolItemOut(**d)
-
-
 @router.put("/provider/{provider_id}", response_model=ProviderOut)
 async def update_provider_paid(
     provider_id: int,
@@ -158,3 +131,30 @@ async def update_model_rate(
         in_pool=True,
         is_paid=False,
     )
+
+
+@router.put("/{item_id}", response_model=PoolItemOut)
+async def update_rate(
+    item_id: int,
+    data: PoolItemPriceUpdate,
+    session: AsyncSession = Depends(get_session),
+):
+    """更新某个 PoolItem 的费率字段（只改提供的字段）"""
+    item = (
+        await session.execute(
+            select(PoolItem)
+            .options(selectinload(PoolItem.provider))
+            .where(PoolItem.id == item_id)
+        )
+    ).scalar_one_or_none()
+    if not item:
+        raise HTTPException(404, "Pool item not found")
+
+    for k, v in data.model_dump(exclude_unset=True).items():
+        setattr(item, k, v)
+    await session.commit()
+    await session.refresh(item)
+
+    d = PoolItemOut.model_validate(item).model_dump()
+    d["provider_name"] = item.provider.name if item.provider else None
+    return PoolItemOut(**d)
