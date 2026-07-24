@@ -157,11 +157,10 @@ onUnmounted(() => {
             class="py-8"
           />
 
-          <!-- Keys grid -->
+          <!-- Keys list (vertical) -->
           <div
             v-else
-            class="grid gap-3 p-4"
-            :style="{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }"
+            class="flex flex-col gap-2 p-4"
           >
             <div
               v-for="k in platform.keys"
@@ -169,20 +168,18 @@ onUnmounted(() => {
               class="bg-surface-container-lowest border border-border rounded-xl overflow-hidden"
             >
               <!-- Key header -->
-              <div class="px-4 pt-4 pb-3 border-b border-border">
-                <div class="flex items-center gap-2 mb-2">
-                  <span class="font-mono text-[12px] text-text-secondary">#{{ k.platform_key_id }}</span>
-                  <NTag size="small" type="info" round>key-{{ k.key_label }}</NTag>
-                  <NTag size="small" :type="getStatus(k).type" round>{{ getStatus(k).label }}</NTag>
-                  <span v-if="!k.is_active" class="ml-auto">
-                    <NTag size="tiny" type="warning">Disabled</NTag>
-                  </span>
-                </div>
+              <div class="flex items-center gap-2 px-4 pt-3 pb-2 border-b border-border">
+                <span class="font-mono text-[12px] text-text-secondary">#{{ k.platform_key_id }}</span>
+                <NTag size="small" type="info" round>key-{{ k.key_label }}</NTag>
+                <NTag size="small" :type="getStatus(k).type" round>{{ getStatus(k).label }}</NTag>
+                <span v-if="!k.is_active" class="ml-auto">
+                  <NTag size="tiny" type="warning">Disabled</NTag>
+                </span>
               </div>
 
-              <!-- Rate window -->
-              <div class="px-4 py-3">
-                <div class="grid grid-cols-4 gap-2 text-[11px] mb-3">
+              <!-- Rate window + details -->
+              <div class="flex items-center gap-3 px-4 py-3 flex-wrap">
+                <div class="grid grid-cols-4 gap-6 text-[11px]">
                   <div class="text-center">
                     <div class="font-mono font-bold text-[15px] text-text-primary">{{ k.rate_window.rpm }}</div>
                     <div class="text-text-secondary">RPM</div>
@@ -202,20 +199,20 @@ onUnmounted(() => {
                 </div>
 
                 <!-- Penalty -->
-                <div class="flex items-center justify-between text-[11px] mb-2">
+                <div class="flex items-center gap-1 text-[11px]">
                   <span class="text-text-secondary">Penalty</span>
                   <span
                     class="font-mono font-bold"
                     :class="k.penalty_score === 0 ? 'text-success' : k.penalty_score <= 2 ? 'text-warning' : 'text-error'"
                   >{{ k.penalty_score }}</span>
                 </div>
-                <div v-if="k.strike_count > 0" class="flex items-center justify-between text-[11px] mb-2">
+                <div v-if="k.strike_count > 0" class="flex items-center gap-1 text-[11px]">
                   <span class="text-text-secondary">Strikes</span>
                   <span class="font-mono font-bold text-warning">{{ k.strike_count }}</span>
                 </div>
 
                 <!-- Cooldown -->
-                <div v-if="k.cooldown_until" class="mt-2">
+                <div v-if="k.cooldown_until" class="flex-1 min-w-32">
                   <div class="flex items-center justify-between text-[11px] mb-1">
                     <span class="text-error font-semibold">Cooldown</span>
                     <span class="text-error font-mono font-bold">{{ cooldownRemaining(k.cooldown_until) }}</span>
@@ -231,9 +228,6 @@ onUnmounted(() => {
                     :rail-color="'#2e2e42'"
                     :fill-color="'#f85149'"
                   />
-                  <div v-if="k.strike_count > 0" class="text-[11px] text-warning mt-1">
-                    ⚠ {{ k.strike_count }} strike(s)
-                  </div>
                 </div>
               </div>
             </div>
