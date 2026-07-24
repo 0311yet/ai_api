@@ -25,13 +25,15 @@ from app.database import async_session
 # ── 配置常量 ────────────────────────────────────────────────────────
 
 _MAX_STRIKE = 4
-# Max cooldown cap: 30 minutes. Longer cooldowns (old: 1h / 24h) caused
-# keys to stay unreachable for too long; capped to avoid wasting requests.
+# Cooldowns SHORTENED: NVIDIA 40 RPM is a 1-minute sliding window. Any
+# cooldown >= 60s already covers one full window. Old values (2m/10m/30m/30m)
+# caused healthy keys to stay blacklisted long after the upstream quota had
+# reset, making the gateway far less stable than simple "fail-over on 429".
 _COOLDOWN_FOR_STRIKE = {
-    1: timedelta(minutes=2),
-    2: timedelta(minutes=10),
-    3: timedelta(minutes=30),
-    4: timedelta(minutes=30),
+    1: timedelta(seconds=3),
+    2: timedelta(seconds=10),
+    3: timedelta(seconds=30),
+    4: timedelta(minutes=1),
 }
 
 _FLUSH_INTERVAL = 5
@@ -139,6 +141,8 @@ class PlatformKeyHealthState:
     strike_count: int = 0
     penalty_score: int = 0
     last_decay: float = field(default_factory=time.time)
+    # Consecutive successes since last 429; used to decay strike_count.
+    _success_streak: int = 0
     # Sticky Session 绑定
     sticky_model: Optional[str] = None
 
@@ -172,14 +176,20 @@ class PlatformKeyHealthState:
         """收到 429：加惩罚分 + 升级冷却"""
         self.penalty_score = min(10, self.penalty_score + 3)
         self.strike_count += 1
+        self._success_streak = 0
         dur = _cooldown_for_strike(self.strike_count)
         self.cooldown_until = time.time() + dur.total_seconds()
         return dur
 
     def record_success(self):
-        """成功请求：惩罚分 -1"""
+        """成功请求：惩罚分 -1，连续 5 次成功后 strike -1（避免永久僵在高级别）"""
         if self.penalty_score > 0:
             self.penalty_score -= 1
+        self._success_streak += 1
+        if self._success_streak >= 5:
+            self._success_streak = 0
+            if self.strike_count > 0:
+                self.strike_count -= 1
 
     def decay_penalty(self) -> bool:
         """惩罚分衰减，返回是否还有剩余"""
