@@ -128,40 +128,45 @@ onUnmounted(() => {
       <NSpin v-if="loading" class="self-center py-16" size="large" />
 
       <template v-else>
-        <!-- Platforms -->
-        <NCard
-          v-for="platform in platforms"
-          :key="platform.platform_id"
-          size="small"
-          :bordered="true"
-          :content-style="{ padding: '0' }"
-          class="!border-border"
+        <!-- Platforms grid: 2 columns, side by side -->
+        <div
+          class="grid gap-4"
+          :style="{ gridTemplateColumns: 'repeat(auto-fill, minmax(560px, 1fr))' }"
         >
-          <template #header>
-            <div class="flex items-center gap-3 flex-wrap">
-              <span class="font-semibold text-sm text-text-primary">{{ platform.platform_name }}</span>
-              <span class="font-mono text-[12px] text-text-secondary truncate max-w-md" :title="platform.base_url">
-                {{ platform.base_url }}
-              </span>
-              <NTag size="tiny" :type="(platform.keys?.length || 0) > 0 ? 'success' : 'warning'">
-                {{ platform.keys?.length || 0 }} key(s)
-              </NTag>
-            </div>
-          </template>
-
-          <!-- Empty state -->
-          <NEmpty
-            v-if="!platform.keys?.length"
+          <NCard
+            v-for="platform in platforms"
+            :key="platform.platform_id"
             size="small"
-            description="No active keys in this platform."
-            class="py-8"
-          />
-
-          <!-- Keys list (vertical) -->
-          <div
-            v-else
-            class="flex flex-col gap-2 p-4"
+            :bordered="true"
+            :content-style="{ padding: '0' }"
+            class="!border-border"
           >
+            <template #header>
+              <div class="flex items-center gap-3 flex-wrap">
+                <span class="font-semibold text-sm text-text-primary">{{ platform.platform_name }}</span>
+                <span class="font-mono text-[12px] text-text-secondary truncate max-w-xs" :title="platform.base_url">
+                  {{ platform.base_url }}
+                </span>
+                <NTag size="tiny" :type="(platform.keys?.length || 0) > 0 ? 'success' : 'warning'">
+                  {{ platform.keys?.length || 0 }} key(s)
+                </NTag>
+              </div>
+            </template>
+
+            <!-- Empty state -->
+            <NEmpty
+              v-if="!platform.keys?.length"
+              size="small"
+              description="No active keys in this platform."
+              class="py-8"
+            />
+
+            <!-- Keys: 2-column layout -->
+            <div
+              v-else
+              class="grid gap-3 p-4"
+              :style="{ gridTemplateColumns: '1fr 1fr' }"
+            >
             <div
               v-for="k in platform.keys"
               :key="k.platform_key_id"
@@ -233,6 +238,7 @@ onUnmounted(() => {
             </div>
           </div>
         </NCard>
+        </div>
 
         <!-- Global empty state -->
         <NEmpty v-if="!platforms.length" description="No platforms configured." />
