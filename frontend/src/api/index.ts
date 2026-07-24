@@ -16,7 +16,7 @@ export const ratesAPI = {
   list: () => api.get('/admin/rates'),
   update: (id: number, data: any) => api.put(`/admin/rates/${id}`, data),
   models: () => api.get('/admin/rates/models'),
-  updateModel: (model: string, data: any) => api.put(`/admin/rates/models/${encodeURIComponent(model)}`, data),
+  updateModel: (model: string, data: any) => api.put(`/admin/rates/models?model=${encodeURIComponent(model)}`, data),
 }
 export const platformsAPI = {
   list: () => api.get('/admin/platforms'),

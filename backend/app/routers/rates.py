@@ -128,7 +128,7 @@ async def list_model_rates(session: AsyncSession = Depends(get_session)):
     return out
 
 
-@router.put("/models/{model}", response_model=ModelRateOut)
+@router.put("/models", response_model=ModelRateOut)
 async def update_model_rate(
     model: str,
     data: ModelRateUpdate,
@@ -137,6 +137,7 @@ async def update_model_rate(
     """Update price for a model across ALL PoolItems that use it.
 
     Sets both free_* and paid_* to the same value (rough cost tracking).
+    Model name passed as query param (supports names with slashes like 'z-ai/glm-5.2').
     """
     result = await session.execute(select(PoolItem).where(PoolItem.model == model))
     items = result.scalars().all()
