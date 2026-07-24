@@ -149,9 +149,9 @@ class PoolRouter:
                         )
                         ph.register_platform_key_state(state)
 
-            # 按有效优先级排序（高的在前），同优先级按 pool_item_id 再 key_id
+            # 按有效优先级排序（值小的优先），同优先级按 pool_item_id 再 key_id
             routable_items.sort(
-                key=lambda i: (-i.effective_priority, i.pool_item_id, i.platform_key_id)
+                key=lambda i: (i.effective_priority, i.pool_item_id, i.platform_key_id)
             )
             return routable_items
 
