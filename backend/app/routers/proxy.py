@@ -121,11 +121,12 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
                 meta = meta_container or {}
                 total_tokens = meta.get("total_tokens", 0)
                 pk_id = meta.get("platform_key_id")
+                resolved_model = meta.get("model", model)
                 if pk_id and total_tokens > 0:
-                    await ph.record_request(pk_id, model, total_tokens)
+                    await ph.record_request(pk_id, resolved_model, total_tokens)
                 # Sticky Session：成功后绑定
-                if session_key and meta.get("platform_key_id"):
-                    proxy_svc.StickySessionManager.bind(session_key, meta["platform_key_id"], model)
+                if session_key and pk_id:
+                    proxy_svc.StickySessionManager.bind(session_key, pk_id, resolved_model)
                 async with async_session() as s:
                     log = proxy_svc.make_log(
                         client_key_id, model, request_id, "success", meta,
@@ -333,10 +334,11 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
                 meta = meta_container or {}
                 total_tokens = meta.get("total_tokens", 0)
                 pk_id = meta.get("platform_key_id")
+                resolved_model = meta.get("model", model)
                 if pk_id and total_tokens > 0:
-                    await ph.record_request(pk_id, model, total_tokens)
-                if session_key and meta.get("platform_key_id"):
-                    proxy_svc.StickySessionManager.bind(session_key, meta["platform_key_id"], model)
+                    await ph.record_request(pk_id, resolved_model, total_tokens)
+                if session_key and pk_id:
+                    proxy_svc.StickySessionManager.bind(session_key, pk_id, resolved_model)
                 async with async_session() as s:
                     combined = b"".join(yield_buffer).decode("utf-8", errors="replace")[:5000]
                     log = proxy_svc.make_log(

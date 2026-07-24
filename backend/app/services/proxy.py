@@ -255,6 +255,7 @@ async def proxy_stream_request(
 
             if resp.status_code == 200:
                 meta_container: dict = {}
+                meta_container["model"] = pool_item.model  # resolved model, not "auto" pool name
                 meta_container_ref = meta_container
 
                 async def gen():
