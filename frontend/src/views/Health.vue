@@ -161,11 +161,10 @@ onUnmounted(() => {
               class="py-8"
             />
 
-            <!-- Keys: 2-column layout -->
+            <!-- Keys: vertical list -->
             <div
               v-else
-              class="grid gap-3 p-4"
-              :style="{ gridTemplateColumns: '1fr 1fr' }"
+              class="flex flex-col gap-2 p-4"
             >
             <div
               v-for="k in platform.keys"
