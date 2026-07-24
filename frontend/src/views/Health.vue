@@ -181,7 +181,7 @@ onUnmounted(() => {
                 </span>
               </div>
 
-              <!-- Rate window + details -->
+              <!-- Rate window (upper half) -->
               <div class="flex items-center gap-3 px-4 py-3 flex-wrap">
                 <div class="grid grid-cols-4 gap-6 text-[11px]">
                   <div class="text-center">
@@ -210,28 +210,37 @@ onUnmounted(() => {
                     :class="k.penalty_score === 0 ? 'text-success' : k.penalty_score <= 2 ? 'text-warning' : 'text-error'"
                   >{{ k.penalty_score }}</span>
                 </div>
-                <div v-if="k.strike_count > 0" class="flex items-center gap-1 text-[11px]">
-                  <span class="text-text-secondary">Strikes</span>
-                  <span class="font-mono font-bold text-warning">{{ k.strike_count }}</span>
-                </div>
+              </div>
 
-                <!-- Cooldown -->
-                <div v-if="k.cooldown_until" class="flex-1 min-w-32">
-                  <div class="flex items-center justify-between text-[11px] mb-1">
-                    <span class="text-error font-semibold">Cooldown</span>
-                    <span class="text-error font-mono font-bold">{{ cooldownRemaining(k.cooldown_until) }}</span>
+              <!-- Cooldown + Strikes (lower half: only rendered when cooling down) -->
+              <div
+                v-if="k.cooldown_until || k.strike_count > 0"
+                class="border-t border-border px-4 py-2 bg-surface-container"
+              >
+                <div class="flex items-center gap-4 mb-1 text-[11px]">
+                  <div v-if="k.strike_count > 0" class="flex items-center gap-1">
+                    <span class="text-text-secondary">Strikes</span>
+                    <span class="font-mono font-bold text-warning">{{ k.strike_count }}</span>
                   </div>
-                  <NProgress
-                    type="line"
-                    :percentage="cooldownProgress(k.cooldown_until)"
-                    :height="5"
-                    :border-radius="3"
-                    :fill-border-radius="3"
-                    :show-indicator="false"
-                    :processing="true"
-                    :rail-color="'#2e2e42'"
-                    :fill-color="'#f85149'"
-                  />
+                  <template v-if="k.cooldown_until">
+                    <div class="flex items-center gap-1">
+                      <span class="text-error font-semibold">Cooldown</span>
+                      <span class="text-error font-mono font-bold">{{ cooldownRemaining(k.cooldown_until) }}</span>
+                    </div>
+                    <div class="flex-1">
+                      <NProgress
+                        type="line"
+                        :percentage="cooldownProgress(k.cooldown_until)"
+                        :height="5"
+                        :border-radius="3"
+                        :fill-border-radius="3"
+                        :show-indicator="false"
+                        :processing="true"
+                        :rail-color="'#2e2e42'"
+                        :fill-color="'#f85149'"
+                      />
+                    </div>
+                  </template>
                 </div>
               </div>
             </div>
