@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
-import { NSpin, NSelect } from 'naive-ui'
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
+import { NSpin, NSelect, NButton } from 'naive-ui'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart, BarChart } from 'echarts/charts'
@@ -12,6 +12,8 @@ import api from '../api'
 
 use([CanvasRenderer, LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent])
 
+const REFRESH_INTERVAL_MS = 3000
+
 const stats = ref<any>({})
 const timeseries = ref<any[]>([])
 const loading = ref(false)
@@ -21,25 +23,64 @@ const dayOptions = [
   { label: 'Last 7 days', value: 7 },
   { label: 'Last 30 days', value: 30 },
 ]
+const lastUpdated = ref<string>('')
 
-onMounted(async () => { await load() })
+let refreshTimer: ReturnType<typeof setInterval> | null = null
 
-async function load() {
-  loadError.value = ''
-  loading.value = true
+async function loadStats() {
   try {
-    const [s, ts] = await Promise.all([
-      api.get('/admin/stats/dashboard'),
-      api.get(`/admin/stats/timeseries?days=${chartDays.value}`),
-    ])
-    stats.value = s.data || {}
-    timeseries.value = ts.data || []
+    const { data } = await api.get('/admin/stats/dashboard')
+    stats.value = data || {}
+    loadError.value = ''
   } catch (e: any) {
-    loadError.value = e?.message || 'Failed to load data'
-    console.error('[Dashboard] load error:', e)
-  } finally {
-    loading.value = false
+    loadError.value = e?.message || 'Failed to load stats'
+    console.error('[Dashboard] loadStats error:', e)
   }
+}
+
+async function loadTimeseries() {
+  try {
+    const { data } = await api.get(`/admin/stats/timeseries?days=${chartDays.value}`)
+    timeseries.value = data || []
+  } catch (e: any) {
+    console.error('[Dashboard] loadTimeseries error:', e)
+  }
+}
+
+async function load(manual: boolean = false) {
+  if (manual) loading.value = true
+  await Promise.all([loadStats(), loadTimeseries()])
+  lastUpdated.value = new Date().toLocaleTimeString()
+  if (manual) loading.value = false
+}
+
+function refreshStatsOnly() {
+  loadStats().then(() => {
+    lastUpdated.value = new Date().toLocaleTimeString()
+  })
+}
+
+function manualRefresh() {
+  load(true)
+  if (refreshTimer) {
+    clearInterval(refreshTimer)
+    refreshTimer = setInterval(refreshStatsOnly, REFRESH_INTERVAL_MS)
+  }
+}
+
+onMounted(async () => {
+  await load(true)
+  // Auto-refresh only the stat cards every 3s; timeseries is historical and
+  // only changes daily, so skip it to avoid unnecessary heavy queries.
+  refreshTimer = setInterval(refreshStatsOnly, REFRESH_INTERVAL_MS)
+})
+
+onBeforeUnmount(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+})
+
+async function onChartDaysChange() {
+  await loadTimeseries()
 }
 
 function fmt(n: number) {
@@ -108,7 +149,10 @@ const latencyTrendOption = computed(() => ({
   <div class="flex flex-col min-h-screen bg-background">
     <TopBar :crumbs="[{ label: 'Dashboard', active: true }]">
       <template #actions>
-        <NSelect v-model:value="chartDays" :options="dayOptions" size="small" style="width:130px" @update:value="load()" />
+        <NSelect v-model:value="chartDays" :options="dayOptions" size="small" style="width:130px" @update:value="onChartDaysChange" />
+        <NButton size="small" @click="manualRefresh" :loading="loading">
+          <span class="material-symbols-outlined text-base">refresh</span>
+        </NButton>
       </template>
     </TopBar>
 
@@ -117,7 +161,7 @@ const latencyTrendOption = computed(() => ({
 
       <div v-else-if="loadError" class="flex flex-col items-center justify-center py-16 text-center gap-3">
         <div class="text-error text-sm">{{ loadError }}</div>
-        <button class="px-4 py-2 bg-primary-container text-white rounded-lg text-sm" @click="load">Retry</button>
+        <button class="px-4 py-2 bg-primary-container text-white rounded-lg text-sm" @click="() => load(true)">Retry</button>
       </div>
 
       <template v-else>
@@ -170,6 +214,11 @@ const latencyTrendOption = computed(() => ({
         <div class="bg-surface-container border border-border rounded-xl p-4">
           <div class="text-sm font-semibold text-text-primary mb-3">Token Usage</div>
           <VChart :option="tokenUsageOption" style="height:200px" autoresize />
+        </div>
+
+        <!-- Auto-refresh hint -->
+        <div class="text-xs text-text-secondary opacity-60 text-center">
+          · auto-refresh 3s · updated {{ lastUpdated || '—' }}
         </div>
       </template>
     </div>
