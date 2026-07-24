@@ -25,11 +25,13 @@ from app.database import async_session
 # ── 配置常量 ────────────────────────────────────────────────────────
 
 _MAX_STRIKE = 4
+# Max cooldown cap: 30 minutes. Longer cooldowns (old: 1h / 24h) caused
+# keys to stay unreachable for too long; capped to avoid wasting requests.
 _COOLDOWN_FOR_STRIKE = {
     1: timedelta(minutes=2),
     2: timedelta(minutes=10),
-    3: timedelta(hours=1),
-    4: timedelta(hours=24),
+    3: timedelta(minutes=30),
+    4: timedelta(minutes=30),
 }
 
 _FLUSH_INTERVAL = 5
