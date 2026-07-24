@@ -96,6 +96,17 @@ async function load() {
   }
 }
 
+// Reload a single platform's keys (no full page reload, no spinner)
+async function reloadPlatform(pid: number) {
+  try {
+    const detail = (await platformsAPI.get(pid)).data
+    const p = platforms.value.find((x: any) => x.id === pid)
+    if (p) p.platform_keys = detail.platform_keys || []
+  } catch (e: any) {
+    message.error('刷新失败: ' + (e?.message || '未知错误'))
+  }
+}
+
 // Platform CRUD
 function openAddPlatform() {
   editingPlatformId.value = null
@@ -125,7 +136,12 @@ async function handleSavePlatform() {
     await platformsAPI.create(payload)
   }
   showPlatformModal.value = false
-  load()
+  if (editingPlatformId.value) {
+    message.success('Platform updated')
+  } else {
+    message.success('Platform added')
+  }
+  await load()
 }
 
 // Key CRUD
@@ -158,17 +174,18 @@ async function handleSaveKey() {
     await platformsAPI.addKey(currentPlatformId.value!, payload)
   }
   showKeyModal.value = false
-  load()
+  message.success(editingKeyId.value ? 'Key updated' : 'Key added')
+  await reloadPlatform(currentPlatformId.value!)
 }
 async function handleDeleteKey(key: any) {
   await platformsAPI.deleteKey(key.platform_id, key.id)
-  load()
+  await reloadPlatform(key.platform_id)
 }
 async function handleDeletePlatform(platform: any) {
   try {
     await platformsAPI.delete(platform.id)
     message.success(`Platform "${platform.name}" deleted`)
-    load()
+    await load()
   } catch (e: any) {
     const detail = e?.response?.data?.detail || e?.message || 'Unknown error'
     message.error(`Delete failed: ${detail}`)
@@ -176,7 +193,7 @@ async function handleDeletePlatform(platform: any) {
 }
 async function toggleKeyEnabled(key: any) {
   await platformsAPI.updateKey(key.platform_id, key.id, { enabled: !key.enabled })
-  load()
+  await reloadPlatform(key.platform_id)
 }
 
 onMounted(load)
