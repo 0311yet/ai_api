@@ -112,7 +112,7 @@ class PoolItemBase(BaseModel):
     priority: int = 1
     weight: int = 1
     is_active: bool = True
-    # 注意：不再在此指定 platform_key_id，路由时自动从 Platform 的 Keys 中选择
+    # Note: do NOT specify platform_key_id here, auto-selected from Platform’s Keys at route time
 
 
 class PoolItemCreate(PoolItemBase):
@@ -124,7 +124,7 @@ class PoolItemOut(PoolItemBase):
     pool_id: int
     platform_name: Optional[str] = None  # 来自 join
     provider_name: Optional[str] = None  # 兼容旧
-    # 费率：per 1M tokens
+    # Rate: per 1M tokens
     free_input_price: float = 0
     free_output_price: float = 0
     paid_input_price: float = 0
@@ -136,7 +136,7 @@ class PoolItemOut(PoolItemBase):
 
 
 class PoolItemPriceUpdate(BaseModel):
-    """单独更新某个 PoolItem 的费率"""
+    """Update a PoolItem's rate config"""
     free_input_price: Optional[float] = None
     free_output_price: Optional[float] = None
     paid_input_price: Optional[float] = None
@@ -333,7 +333,7 @@ class MessageResponse(BaseModel):
 
 # ── PlatformKey Health ──────────────────────────────────────────
 class RateLimitWindow(BaseModel):
-    """单个时间窗口的用量"""
+    """Single time window usage"""
     rpm: int = 0
     rpd: int = 0
     tpm: int = 0
@@ -341,13 +341,13 @@ class RateLimitWindow(BaseModel):
 
 
 class KeyHealthItem(BaseModel):
-    """单个 PlatformKey 的健康状态"""
+    """Single PlatformKey health status"""
     platform_key_id: int
     key_label: str = ""
     is_active: bool = True
-    # 滑动窗口
+    # Sliding window
     rate_window: RateLimitWindow
-    # 冷却
+    # Cooldown
     cooldown_until: Optional[str] = None
     strike_count: int = 0
     penalty_score: int = 0
@@ -355,7 +355,7 @@ class KeyHealthItem(BaseModel):
 
 
 class PoolItemHealthItem(BaseModel):
-    """单个 PoolItem 的健康状态（含该平台下所有 Keys）"""
+    """Single PoolItem health status (all Keys under the platform)"""
     pool_item_id: int
     platform_id: int
     platform_name: str
@@ -374,7 +374,7 @@ class PoolHealthOut(BaseModel):
 
 
 class HealthOverview(BaseModel):
-    """Provider 健康总览"""
+    """Provider health overview"""
     pools: List[PoolHealthOut]
     sticky_sessions_active: int
 
@@ -391,7 +391,7 @@ class PlatformHealthKeyItem(BaseModel):
 
 
 class PlatformHealthItem(BaseModel):
-    """单个平台的健康视图"""
+    """Single platform health view"""
     platform_id: int
     platform_name: str
     base_url: str
@@ -399,6 +399,6 @@ class PlatformHealthItem(BaseModel):
 
 
 class PlatformsHealthOut(BaseModel):
-    """按平台分组的健康总览（无模型层）"""
+    """Platform-grouped health overview (no model layer)"""
     platforms: List[PlatformHealthItem]
     sticky_sessions_active: int

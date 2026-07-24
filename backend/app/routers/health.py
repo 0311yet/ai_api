@@ -1,5 +1,5 @@
 """
-PlatformKey Health 管理接口
+PlatformKey Health Management API
 
 GET /admin/health/overview          - 所有 Pool 的 PlatformKey 健康总览
 GET /admin/health/rate-limit/<id>    - 单个 PlatformKey 限流详情
@@ -30,12 +30,12 @@ router = APIRouter(prefix="/admin/health", tags=["health"])
 @router.get("/overview", response_model=HealthOverview)
 async def health_overview(session: AsyncSession = Depends(get_session)):
     """
-    返回所有 Pool 的 PlatformKey 健康状态：
-    - 每个 PoolItem × PlatformKey 组合一条（展示所有 keys 的健康状态）
-    - 滑动窗口用量（RPM/RPD/TPM/TPD）
-    - 冷却状态（是否在冷却中、剩余时间、strike 次数）
-    - 惩罚分
-    - 有效优先级
+    Return all Pool's PlatformKey health status:
+    - Each PoolItem x PlatformKey combo = one entry (all keys' health status)
+    - Sliding window usage (RPM/RPD/TPM/TPD)
+    - Cooldown status
+    - Penalty score
+    - Effective priority
     """
     result = await session.execute(
         select(Pool).where(Pool.is_active == True).order_by(Pool.name)
@@ -123,7 +123,7 @@ async def health_overview(session: AsyncSession = Depends(get_session)):
 @router.get("/platforms", response_model=PlatformsHealthOut)
 async def health_platforms(session: AsyncSession = Depends(get_session)):
     """
-    按平台分组的健康总览（无模型层）：
+    Per-platform health overview (no model layer):
 
     result = await session.execute(
         select(Platform).options(selectinload(Platform.platform_keys)).order_by(Platform.name)
@@ -147,7 +147,7 @@ async def health_platforms(session: AsyncSession = Depends(get_session)):
                 )
                 ph.register_platform_key_state(state)
 
-            # 聚合该 Key 下所有模型的滑动窗口
+            # Aggregate all models' windows for this Key
             total_rpm = 0
             total_rpd = 0
             total_tpm = 0
@@ -198,10 +198,10 @@ async def platform_key_rate_limit(
     session: AsyncSession = Depends(get_session),
 ):
     """
-    返回单个 PlatformKey 的详细限流状态：
-    - 各模型的滑动窗口用量
-    - 当前冷却状态
-    - 惩罚分
+    Return single PlatformKey rate limit detail:
+    - Sliding window usage per model
+    - Current cooldown status
+    - Penalty score
     """
     result = await session.execute(
         select(PlatformKey, Platform)
