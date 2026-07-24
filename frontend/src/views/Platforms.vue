@@ -2,7 +2,7 @@
 import { ref, onMounted, h } from 'vue'
 import {
   NButton, NModal, NForm, NFormItem, NInput, NSwitch, NTag,
-  NDataTable, NEmpty, useMessage,
+  NDataTable, NEmpty, NSpin, useMessage,
 } from 'naive-ui'
 import TopBar from '../components/TopBar.vue'
 import { platformsAPI } from '../api'
@@ -164,6 +164,16 @@ async function handleDeleteKey(key: any) {
   await platformsAPI.deleteKey(key.platform_id, key.id)
   load()
 }
+async function handleDeletePlatform(platform: any) {
+  try {
+    await platformsAPI.delete(platform.id)
+    message.success(`Platform "${platform.name}" deleted`)
+    load()
+  } catch (e: any) {
+    const detail = e?.response?.data?.detail || e?.message || 'Unknown error'
+    message.error(`Delete failed: ${detail}`)
+  }
+}
 async function toggleKeyEnabled(key: any) {
   await platformsAPI.updateKey(key.platform_id, key.id, { enabled: !key.enabled })
   load()
@@ -191,6 +201,9 @@ onMounted(load)
         </div>
       </div>
 
+      <!-- Loading spinner -->
+      <NSpin v-if="loading" class="self-center py-16" size="large" />
+
       <!-- Platforms list -->
       <template v-if="!loading && platforms.length">
         <div v-for="platform in platforms" :key="platform.id" class="border border-border rounded-xl overflow-hidden bg-surface-container">
@@ -211,6 +224,7 @@ onMounted(load)
               <span class="text-xs text-text-secondary font-mono">{{ platform.platform_keys?.length || 0 }} key(s)</span>
               <NButton size="tiny" type="primary" @click="openAddKey(platform)">+ Add Key</NButton>
               <NButton size="tiny" @click="openEditPlatform(platform)">Edit</NButton>
+              <NButton size="tiny" color="#D03050" @click="handleDeletePlatform(platform)">Del</NButton>
             </div>
           </div>
 
