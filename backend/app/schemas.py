@@ -144,6 +144,22 @@ class PoolItemPriceUpdate(BaseModel):
     paid_output_price: Optional[float] = None
 
 
+# ---------------- Model-level rates (deduplicated by model name) ----------------
+class ModelRateOut(BaseModel):
+    """One row per unique model name, aggregated from all platforms."""
+    model: str
+    input_price: float = 0
+    output_price: float = 0
+    in_pool: bool = False
+    is_paid: bool = False  # True if any platform providing this model is marked is_paid
+
+
+class ModelRateUpdate(BaseModel):
+    """Update price for a model (applied to all its PoolItems)."""
+    input_price: float = 0
+    output_price: float = 0
+
+
 class PoolBase(BaseModel):
     name: str
     display_name: Optional[str] = None

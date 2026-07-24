@@ -11,7 +11,13 @@ export const healthAPI = {
   rateLimit: (providerId: number) => api.get(`/admin/health/rate-limit/${providerId}`),
 }
 
-// ── platforms API ──
+// ── rates API ──
+export const ratesAPI = {
+  list: () => api.get('/admin/rates'),
+  update: (id: number, data: any) => api.put(`/admin/rates/${id}`, data),
+  models: () => api.get('/admin/rates/models'),
+  updateModel: (model: string, data: any) => api.put(`/admin/rates/models/${encodeURIComponent(model)}`, data),
+}
 export const platformsAPI = {
   list: () => api.get('/admin/platforms'),
   get: (id: number) => api.get(`/admin/platforms/${id}`),

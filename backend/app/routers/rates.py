@@ -3,6 +3,8 @@
 GET  /admin/rates                  - 列出所有 PoolItem 的费率（含 pool/provider 名）
 PUT  /admin/rates/{item_id}        - 更新某个 PoolItem 的费率
 PUT  /admin/rates/provider/{pid}   - 更新 Provider 的 is_paid 标记
+GET  /admin/rates/models           - 按模型去重列出费率（从所有 Platform.models 汇总）
+PUT  /admin/rates/models/{model}   - 更新某模型在所有 PoolItem 中的费率
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -11,8 +13,8 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_session
 from app.middleware import verify_admin
-from app.models import PoolItem, Pool, Provider
-from app.schemas import PoolItemOut, PoolItemPriceUpdate, ProviderOut
+from app.models import PoolItem, Pool, Provider, Platform
+from app.schemas import PoolItemOut, PoolItemPriceUpdate, ProviderOut, ModelRateOut, ModelRateUpdate
 
 router = APIRouter(prefix="/admin/rates", tags=["rates"], dependencies=[Depends(verify_admin)])
 
@@ -78,3 +80,80 @@ async def update_provider_paid(
     await session.commit()
     await session.refresh(provider)
     return provider
+
+
+@router.get("/models", response_model=list[ModelRateOut])
+async def list_model_rates(session: AsyncSession = Depends(get_session)):
+    """按模型去重列出费率。
+
+    Sources: all Platform.models (JSON list) collected and deduplicated.
+    For each model, find a PoolItem with that model to get current price.
+    Returns one row per unique model name.
+    """
+    # 1. Collect all model names from all Platforms
+    result = await session.execute(select(Platform.models, Platform.is_paid))
+    all_models: dict[str, bool] = {}  # model_name -> in_any_paid_platform
+    for models_json, is_paid in result:
+        for m in (models_json or []):
+            if m not in all_models:
+                all_models[m] = False
+            if is_paid:
+                all_models[m] = True
+
+    # 2. Get all PoolItems to find prices per model
+    items_result = await session.execute(select(PoolItem))
+    items = items_result.scalars().all()
+    # model -> first PoolItem's prices (representative)
+    model_prices: dict[str, dict] = {}
+    in_pool: set[str] = set()
+    for item in items:
+        in_pool.add(item.model)
+        if item.model not in model_prices:
+            model_prices[item.model] = {
+                "input_price": item.free_input_price or item.paid_input_price or 0,
+                "output_price": item.free_output_price or item.paid_output_price or 0,
+            }
+
+    # 3. Build output: all models from platforms, with price (0 if not in pool)
+    out = []
+    for model_name in sorted(all_models.keys()):
+        prices = model_prices.get(model_name, {"input_price": 0, "output_price": 0})
+        out.append(ModelRateOut(
+            model=model_name,
+            input_price=prices["input_price"],
+            output_price=prices["output_price"],
+            in_pool=model_name in in_pool,
+            is_paid=all_models[model_name],
+        ))
+    return out
+
+
+@router.put("/models/{model}", response_model=ModelRateOut)
+async def update_model_rate(
+    model: str,
+    data: ModelRateUpdate,
+    session: AsyncSession = Depends(get_session),
+):
+    """Update price for a model across ALL PoolItems that use it.
+
+    Sets both free_* and paid_* to the same value (rough cost tracking).
+    """
+    result = await session.execute(select(PoolItem).where(PoolItem.model == model))
+    items = result.scalars().all()
+    if not items:
+        raise HTTPException(404, f"No pool items found for model '{model}'")
+
+    for item in items:
+        item.free_input_price = data.input_price
+        item.free_output_price = data.output_price
+        item.paid_input_price = data.input_price
+        item.paid_output_price = data.output_price
+    await session.commit()
+
+    return ModelRateOut(
+        model=model,
+        input_price=data.input_price,
+        output_price=data.output_price,
+        in_pool=True,
+        is_paid=False,
+    )
