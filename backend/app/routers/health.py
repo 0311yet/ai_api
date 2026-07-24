@@ -124,7 +124,7 @@ async def health_overview(session: AsyncSession = Depends(get_session)):
 async def health_platforms(session: AsyncSession = Depends(get_session)):
     """
     Per-platform health overview (no model layer):
-
+    """
     result = await session.execute(
         select(Platform).options(selectinload(Platform.platform_keys)).order_by(Platform.name)
     )
