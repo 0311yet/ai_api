@@ -76,7 +76,7 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
     if not proxy_svc.check_model_allowed(client_key, model):
         raise HTTPException(403, f"Model '{model}' not allowed for this key")
 
-    pool = proxy_svc.resolve_pool_for_key(client_key, model)
+    pool = await proxy_svc.resolve_pool_for_key(session, client_key, model)
     if not pool:
         raise HTTPException(404, f"No active pool matching model '{model}'")
 
@@ -280,7 +280,7 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
     if not proxy_svc.check_model_allowed(client_key, model):
         raise HTTPException(403, f"Model '{model}' not allowed for this key")
 
-    pool = proxy_svc.resolve_pool_for_key(client_key, model)
+    pool = await proxy_svc.resolve_pool_for_key(session, client_key, model)
     if not pool:
         raise HTTPException(404, f"No active pool matching model '{model}'")
 

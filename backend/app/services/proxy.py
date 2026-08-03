@@ -62,12 +62,19 @@ def check_model_allowed(client_key: ClientKey, model: str) -> bool:
     return model in client_key.allowed_models
 
 
-def resolve_pool_for_key(client_key: ClientKey, model: str) -> Optional[Pool]:
+async def resolve_pool_for_key(session: AsyncSession, client_key: ClientKey, model: str) -> Optional[Pool]:
     """从 client_key 绑定的 pool 找到实际的 Pool 实例"""
     pool = client_key.pool
-    if not pool or not pool.is_active:
-        return None
-    return pool
+    if pool and pool.is_active and any(
+        item.is_active and item.model == model for item in pool.pool_items
+    ):
+        return pool
+    result = await session.execute(
+        select(Pool)
+        .options(selectinload(Pool.pool_items))
+        .where(Pool.name == model, Pool.is_active == True)
+    )
+    return result.scalar_one_or_none()
 
 
 async def get_ordered_items(

@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from app.config import settings
-from app.database import init_db
+from app.database import init_db, async_session
 from app.routers import auth, providers, pools, keys, logs, stats, proxy, health, rates, platforms
 
 
@@ -17,6 +17,9 @@ from app.routers import auth, providers, pools, keys, logs, stats, proxy, health
 async def lifespan(app: FastAPI):
     """应用生命周期：启动时初始化数据库 + 启动后台任务"""
     await init_db()
+    # Backfill pools for platform models created before automatic pool sync.
+    async with async_session() as session:
+        await platforms.sync_all_platform_model_pools(session)
     # 启动 Provider Health 后台任务
     from app.services.provider_health import start_health_tasks
     await start_health_tasks()

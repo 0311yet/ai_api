@@ -51,6 +51,14 @@ async def _sync_platform_model_pools(session: AsyncSession, platform: Platform, 
         if existing.scalar_one_or_none() is None:
             session.add(PoolItem(pool_id=pool.id, platform_id=platform.id, model=model,
                                  priority=1, weight=1, is_active=True))
+
+
+async def sync_all_platform_model_pools(session: AsyncSession) -> None:
+    """Backfill model pools for platforms created before automatic syncing."""
+    result = await session.execute(select(Platform))
+    for platform in result.scalars().all():
+        await _sync_platform_model_pools(session, platform, platform.models or [])
+    await session.commit()
 # ── Platform CRUD ──────────────────────────────────────────────
 
 @router.get("")
