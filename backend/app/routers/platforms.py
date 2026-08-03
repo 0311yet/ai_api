@@ -62,8 +62,20 @@ async def _sync_platform_model_pools(session: AsyncSession, platform: Platform, 
 async def sync_all_platform_model_pools(session: AsyncSession) -> None:
     """Backfill namespaced model pools for existing platforms."""
     result = await session.execute(select(Platform))
-    for platform in result.scalars().all():
+    platforms = result.scalars().all()
+    for platform in platforms:
         await _sync_platform_model_pools(session, platform, platform.models or [])
+
+    # Retire legacy auto-generated pools whose public name was only the
+    # upstream model. Keep the rows for historical logs, but expose only the
+    # new platform-scoped aliases to clients.
+    models = {str(model).strip() for platform in platforms for model in (platform.models or [])}
+    if models:
+        legacy_result = await session.execute(
+            select(Pool).where(Pool.name.in_(models), Pool.is_active == True)
+        )
+        for pool in legacy_result.scalars().all():
+            pool.is_active = False
     await session.commit()
 # ── Platform CRUD ──────────────────────────────────────────────
 
