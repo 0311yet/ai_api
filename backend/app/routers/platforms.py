@@ -25,7 +25,11 @@ router = APIRouter(
 
 
 async def _sync_platform_model_pools(session: AsyncSession, platform: Platform, models: list[str]) -> None:
-    """Create a dedicated pool for each platform model and attach this platform."""
+    """Create a namespaced pool for each platform model.
+
+    The pool name is the client-facing model alias (``platform-model``),
+    while PoolItem.model remains the upstream model name sent to the provider.
+    """
     normalized_models = []
     seen = set()
     for model in models or []:
@@ -35,12 +39,14 @@ async def _sync_platform_model_pools(session: AsyncSession, platform: Platform, 
             seen.add(value)
     if not normalized_models:
         return
-    result = await session.execute(select(Pool).where(Pool.name.in_(normalized_models)))
+    aliases = [f"{platform.name}-{model}" for model in normalized_models]
+    result = await session.execute(select(Pool).where(Pool.name.in_(aliases)))
     pools_by_name = {pool.name: pool for pool in result.scalars().all()}
     for model in normalized_models:
-        pool = pools_by_name.get(model)
+        alias = f"{platform.name}-{model}"
+        pool = pools_by_name.get(alias)
         if pool is None:
-            pool = Pool(name=model, display_name=model, strategy="priority", is_active=True)
+            pool = Pool(name=alias, display_name=alias, strategy="priority", is_active=True)
             session.add(pool)
             await session.flush()
         existing = await session.execute(select(PoolItem.id).where(
@@ -54,7 +60,7 @@ async def _sync_platform_model_pools(session: AsyncSession, platform: Platform, 
 
 
 async def sync_all_platform_model_pools(session: AsyncSession) -> None:
-    """Backfill model pools for platforms created before automatic syncing."""
+    """Backfill namespaced model pools for existing platforms."""
     result = await session.execute(select(Platform))
     for platform in result.scalars().all():
         await _sync_platform_model_pools(session, platform, platform.models or [])
