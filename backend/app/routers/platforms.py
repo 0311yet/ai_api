@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_session
 from app.middleware import verify_admin
-from app.models import Platform, PlatformKey, PoolItem
+from app.models import Platform, PlatformKey, Pool, PoolItem
 from app.schemas import (
     PlatformCreate, PlatformUpdate, PlatformOut, PlatformDetailOut,
     PlatformKeyCreate, PlatformKeyUpdate, PlatformKeyOut,
@@ -23,6 +23,34 @@ router = APIRouter(
 )
 
 
+
+async def _sync_platform_model_pools(session: AsyncSession, platform: Platform, models: list[str]) -> None:
+    """Create a dedicated pool for each platform model and attach this platform."""
+    normalized_models = []
+    seen = set()
+    for model in models or []:
+        value = str(model).strip()
+        if value and value not in seen:
+            normalized_models.append(value)
+            seen.add(value)
+    if not normalized_models:
+        return
+    result = await session.execute(select(Pool).where(Pool.name.in_(normalized_models)))
+    pools_by_name = {pool.name: pool for pool in result.scalars().all()}
+    for model in normalized_models:
+        pool = pools_by_name.get(model)
+        if pool is None:
+            pool = Pool(name=model, display_name=model, strategy="priority", is_active=True)
+            session.add(pool)
+            await session.flush()
+        existing = await session.execute(select(PoolItem.id).where(
+            PoolItem.pool_id == pool.id,
+            PoolItem.platform_id == platform.id,
+            PoolItem.model == model,
+        ))
+        if existing.scalar_one_or_none() is None:
+            session.add(PoolItem(pool_id=pool.id, platform_id=platform.id, model=model,
+                                 priority=1, weight=1, is_active=True))
 # ── Platform CRUD ──────────────────────────────────────────────
 
 @router.get("")
@@ -67,6 +95,8 @@ async def create_platform(data: PlatformCreate, session: AsyncSession = Depends(
         is_active=data.is_active,
     )
     session.add(platform)
+    await session.flush()
+    await _sync_platform_model_pools(session, platform, data.models)
     await session.commit()
     # Reload with platform_keys eager-loaded for response_model serialization
     result = await session.execute(
@@ -101,8 +131,11 @@ async def update_platform(
     platform = await session.get(Platform, platform_id)
     if not platform:
         raise HTTPException(404, "Platform not found")
-    for k, v in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+    for k, v in updates.items():
         setattr(platform, k, v)
+    if "models" in updates:
+        await _sync_platform_model_pools(session, platform, updates["models"])
     await session.commit()
     # Reload with platform_keys eager-loaded for response_model serialization
     result = await session.execute(
