@@ -76,14 +76,24 @@ class PlatformKeyUpdate(BaseModel):
     enabled: Optional[bool] = None
 
 
-class PlatformKeyOut(PlatformKeyBase):
+class PlatformKeyOut(BaseModel):
     id: int
     platform_id: int
+    api_key: str
+    label: str = ''
+    enabled: bool = True
     is_active: bool = True
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+    @classmethod
+    def model_validate(cls, obj, **kwargs):
+        value = super().model_validate(obj, **kwargs)
+        raw = value.api_key or ''
+        value.api_key = raw[:4] + '...' + raw[-4:] if len(raw) > 8 else '****'
+        return value
 
 
 # ---------------- PlatformOut (after PlatformKeyOut) ----------------

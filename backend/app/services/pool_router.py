@@ -8,6 +8,7 @@ Pool Router: 模型池路由逻辑，支持健康感知、故障转移、粘性�
 """
 import random
 import logging
+import threading
 from typing import Optional, List, Tuple
 from dataclasses import dataclass
 from sqlalchemy import select
@@ -18,6 +19,9 @@ from app.models import Pool, PoolItem, Platform, PlatformKey
 from app.services import provider_health as ph
 
 logger = logging.getLogger(__name__)
+
+_ROUND_ROBIN_LOCK = threading.Lock()
+_ROUND_ROBIN_POSITIONS: dict[int, int] = {}
 
 
 @dataclass
@@ -181,7 +185,7 @@ class PoolRouter:
                     break
 
         # 按 effective_priority 排序
-        sorted_items = sorted(items, key=lambda i: (-i.effective_priority, i.pool_item_id))
+        sorted_items = sorted(items, key=lambda i: (i.effective_priority, i.pool_item_id, i.platform_key_id))
 
         # 选择第一个可用的
         for item in sorted_items:
@@ -321,6 +325,36 @@ async def get_routable_items(
     fallback_count = sum(1 for item in items if not item.can_serve[0])
 
     return items, fallback_count
+
+
+def order_routable_items(items: List[RoutableItem], strategy: str, pool_id: int,
+                         sticky_platform_key_id: Optional[int] = None) -> List[RoutableItem]:
+    """Build the complete fallback order using the pool strategy."""
+    healthy = [item for item in items if item.can_serve[0]]
+    unhealthy = [item for item in items if not item.can_serve[0]]
+    sticky = next((item for item in healthy if item.platform_key_id == sticky_platform_key_id), None)
+    if sticky:
+        healthy.remove(sticky)
+    if strategy == "weighted":
+        ordered, remaining = [], healthy[:]
+        while remaining:
+            weights = [max(item.weight, 0) for item in remaining]
+            chosen = random.choice(remaining) if sum(weights) == 0 else random.choices(remaining, weights=weights, k=1)[0]
+            ordered.append(chosen)
+            remaining.remove(chosen)
+    elif strategy == "random":
+        ordered = healthy[:]
+        random.shuffle(ordered)
+    elif strategy == "round_robin":
+        ordered = sorted(healthy, key=lambda i: (i.pool_item_id, i.platform_key_id))
+        if ordered:
+            with _ROUND_ROBIN_LOCK:
+                start = _ROUND_ROBIN_POSITIONS.get(pool_id, 0) % len(ordered)
+                _ROUND_ROBIN_POSITIONS[pool_id] = start + 1
+            ordered = ordered[start:] + ordered[:start]
+    else:
+        ordered = sorted(healthy, key=lambda i: (i.effective_priority, i.pool_item_id, i.platform_key_id))
+    return ([sticky] if sticky else []) + ordered + unhealthy
 
 
 async def get_available_keys(

@@ -180,7 +180,7 @@ async def create_platform_key(
 
     key = PlatformKey(
         platform_id=platform_id,
-        api_key=data.api_key,
+        api_key=data.api_key.strip(),
         label=data.label,
         enabled=data.enabled,
         is_active=True,
@@ -203,7 +203,11 @@ async def update_platform_key(
     if not key or key.platform_id != platform_id:
         raise HTTPException(404, "PlatformKey not found")
 
-    for k, v in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+    # Empty API key means keep the existing secret from a masked edit form.
+    if 'api_key' in updates and not updates['api_key']:
+        updates.pop('api_key')
+    for k, v in updates.items():
         setattr(key, k, v)
     await session.commit()
     await session.refresh(key)

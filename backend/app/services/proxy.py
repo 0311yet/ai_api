@@ -27,7 +27,7 @@ from sqlalchemy.orm import selectinload
 from app.database import async_session
 from app.config import settings
 from app.models import ClientKey, Pool, PoolItem, Platform, PlatformKey, RequestLog
-from app.services.pool_router import PoolRouter
+from app.services.pool_router import order_routable_items
 from app.services import provider_health as ph
 
 
@@ -86,7 +86,12 @@ async def get_ordered_items(
         model="",
         sticky_platform_key_id=sticky_platform_key_id,
     )
-    return items, fallback_count
+    return order_routable_items(
+        items,
+        strategy=strategy,
+        pool_id=pool.id,
+        sticky_platform_key_id=sticky_platform_key_id,
+    ), fallback_count
 
 
 def is_multi_turn(messages: list) -> bool:
@@ -184,6 +189,11 @@ async def proxy_json_request(
                     continue
                 else:
                     last_error = f"{pool_item.key_label} (key {platform_key_id}) upstream {resp.status_code}"
+                    # Client/authentication errors are deterministic; do not hide them as 502.
+                    if 400 <= resp.status_code < 500:
+                        return resp.status_code, {"error": {"message": last_error}}, _make_meta(
+                            pool_item, platform_key_id, fallback_count, start, ttft=ttft, error=last_error
+                        )
                     continue
         except httpx.TimeoutException:
             last_error = f"{pool_item.key_label} (key {platform_key_id}) timeout"
@@ -309,6 +319,10 @@ async def proxy_stream_request(
                 await resp.aclose()
                 await client.aclose()
                 last_error = f"{pool_item.key_label} (key {platform_key_id}) upstream {resp.status_code}"
+                if 400 <= resp.status_code < 500:
+                    return resp.status_code, None, _make_meta(
+                        pool_item, platform_key_id, fallback_count, start, ttft=ttft, error=last_error
+                    )
                 continue
         except httpx.TimeoutException:
             last_error = f"{pool_item.key_label} (key {platform_key_id}) timeout"

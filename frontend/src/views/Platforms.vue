@@ -156,7 +156,7 @@ function openEditKey(key: any) {
   currentPlatformId.value = key.platform_id
   keyForm.value = {
     label: key.label,
-    api_key: key.api_key,
+    api_key: "",
     enabled: key.enabled,
   }
   showKeyModal.value = true

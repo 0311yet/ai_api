@@ -108,7 +108,7 @@ async def chat_completions(request: Request, session: AsyncSession = Depends(get
             session.add(log)
             await proxy_svc.increment_key_usage(client_key_id, 0)
             await session.commit()
-            return JSONResponse(status_code=502, content={"error": {"message": "All upstreams failed"}})
+            return JSONResponse(status_code=code, content={"error": {"message": "All upstreams failed"}})
 
         async def stream_with_log():
             yield_buffer = []
