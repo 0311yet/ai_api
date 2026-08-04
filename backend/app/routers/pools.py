@@ -36,7 +36,24 @@ def _pool_to_out(pool: Pool) -> PoolOut:
     """转换 model -> response schema，附加 platform_name / provider_name"""
     items = []
     for item in pool.pool_items:
-        item_dict = PoolItemOut.model_validate(item).model_dump()
+        # Historical pool items may only reference a legacy provider, or may
+        # have neither target after a partial migration. Keep the admin list
+        # readable so one stale row cannot make the whole endpoint fail.
+        item_dict = {
+            "id": item.id,
+            "pool_id": item.pool_id,
+            "platform_id": item.platform_id,
+            "provider_id": item.provider_id,
+            "model": item.model,
+            "priority": item.priority,
+            "weight": item.weight,
+            "is_active": item.is_active,
+            "free_input_price": item.free_input_price or 0,
+            "free_output_price": item.free_output_price or 0,
+            "paid_input_price": item.paid_input_price or 0,
+            "paid_output_price": item.paid_output_price or 0,
+            "created_at": item.created_at,
+        }
         # 优先用 platform_name（新的），兼容 provider_name（旧的）
         item_dict["platform_name"] = (
             item.platform.name if item.platform else None
