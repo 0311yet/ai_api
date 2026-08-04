@@ -2,7 +2,7 @@
 import { ref, onMounted, h } from 'vue'
 import { NDataTable, NButton, NModal, NForm, NFormItem, NInput, NSwitch, NTag, useMessage } from 'naive-ui'
 import TopBar from '../components/TopBar.vue'
-import api from '../api'
+import api, { asList } from '../api'
 
 const message = useMessage()
 const loading = ref(false)
@@ -49,7 +49,7 @@ const columns = [
 
 async function load() {
   loading.value = true
-  try { rows.value = (await api.get('/admin/providers')).data }
+  try { rows.value = asList((await api.get('/admin/providers')).data) }
   catch (e: any) { message.error('加载失败: ' + (e?.message || '未知错误')); console.error(e) }
   finally { loading.value = false }
 }

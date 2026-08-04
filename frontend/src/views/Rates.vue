@@ -5,7 +5,7 @@ import {
   NTag, NSpin, useMessage,
 } from 'naive-ui'
 import TopBar from '../components/TopBar.vue'
-import { ratesAPI } from '../api'
+import { asList, ratesAPI } from '../api'
 
 const message = useMessage()
 const loading = ref(false)
@@ -67,7 +67,7 @@ function fmtPrice(p: number) {
 async function load() {
   loading.value = true
   try {
-    rows.value = (await ratesAPI.models()).data
+    rows.value = asList((await ratesAPI.models()).data)
   } catch (e: any) {
     message.error('加载失败: ' + (e?.message || '未知错误'))
     console.error(e)
@@ -77,7 +77,7 @@ async function load() {
 }
 
 async function reloadOnly() {
-  rows.value = (await ratesAPI.models()).data
+  rows.value = asList((await ratesAPI.models()).data)
 }
 
 function openEdit(r: any) {

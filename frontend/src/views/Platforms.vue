@@ -5,7 +5,7 @@ import {
   NDataTable, NEmpty, NSpin, useMessage,
 } from 'naive-ui'
 import TopBar from '../components/TopBar.vue'
-import { platformsAPI } from '../api'
+import { asList, platformsAPI } from '../api'
 
 const message = useMessage()
 const loading = ref(false)
@@ -82,11 +82,11 @@ const keyColumns = [
 async function load() {
   loading.value = true
   try {
-    platforms.value = (await platformsAPI.list()).data
+    platforms.value = asList((await platformsAPI.list()).data)
     // Also fetch detail for each platform to get platform_keys
     await Promise.all(platforms.value.map(async (p: any) => {
       const detail = (await platformsAPI.get(p.id)).data
-      p.platform_keys = detail.platform_keys || []
+      p.platform_keys = asList(detail.platform_keys)
     }))
   } catch (e: any) {
     message.error('加载失败: ' + (e?.message || '未知错误'))

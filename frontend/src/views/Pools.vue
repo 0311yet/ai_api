@@ -2,8 +2,7 @@
 import { ref, onMounted, h } from 'vue'
 import { NDataTable, NButton, NModal, NForm, NFormItem, NInput, NSelect, NSwitch, NTag, NInputNumber, useMessage } from 'naive-ui'
 import TopBar from '../components/TopBar.vue'
-import api from '../api'
-import { platformsAPI } from '../api'
+import api, { asList, platformsAPI } from '../api'
 
 const message = useMessage()
 const loading = ref(false)
@@ -91,12 +90,12 @@ async function load() {
   loading.value = true
   try {
     const poolsRes = await api.get('/admin/pools')
-    rows.value = poolsRes.data
-    platforms.value = (await platformsAPI.list()).data
+    rows.value = asList(poolsRes.data)
+    platforms.value = asList((await platformsAPI.list()).data)
     // Also fetch detail to get platform_keys for each platform
     await Promise.all(platforms.value.map(async (p: any) => {
       const detail = (await platformsAPI.get(p.id)).data
-      p.platform_keys = detail.platform_keys || []
+      p.platform_keys = asList(detail.platform_keys)
     }))
   } catch (e: any) { message.error('加载失败: ' + (e?.message || '未知错误')); console.error(e) }
   finally { loading.value = false }

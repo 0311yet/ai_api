@@ -2,6 +2,18 @@
 import axios, { type AxiosInstance, type AxiosResponse } from 'axios'
 import { createDiscreteApi } from 'naive-ui'
 
+/** Normalize list responses from both the current API and older deployments. */
+export function asList<T = any>(payload: unknown): T[] {
+  if (Array.isArray(payload)) return payload as T[]
+  if (payload && typeof payload === 'object') {
+    const value = payload as Record<string, unknown>
+    for (const key of ['items', 'data', 'results', 'rows']) {
+      if (Array.isArray(value[key])) return value[key] as T[]
+    }
+  }
+  return []
+}
+
 const { message } = createDiscreteApi(['message'])
 
 // ── health API ──

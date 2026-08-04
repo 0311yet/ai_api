@@ -8,7 +8,7 @@ import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/compon
 import VChart from 'vue-echarts'
 import TopBar from '../components/TopBar.vue'
 import StatCard from '../components/StatCard.vue'
-import api from '../api'
+import api, { asList } from '../api'
 
 use([CanvasRenderer, LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent])
 
@@ -41,7 +41,7 @@ async function loadStats() {
 async function loadTimeseries() {
   try {
     const { data } = await api.get(`/admin/stats/timeseries?days=${chartDays.value}`)
-    timeseries.value = data || []
+    timeseries.value = asList(data)
   } catch (e: any) {
     console.error('[Dashboard] loadTimeseries error:', e)
   }

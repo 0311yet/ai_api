@@ -2,7 +2,7 @@
 import { ref, onMounted, h } from 'vue'
 import { NDataTable, NButton, NModal, NForm, NFormItem, NInput, NSwitch, NTag, useMessage } from 'naive-ui'
 import TopBar from '../components/TopBar.vue'
-import api from '../api'
+import api, { asList } from '../api'
 
 const message = useMessage()
 const loading = ref(false)
@@ -45,8 +45,8 @@ async function load() {
   loading.value = true
   try {
     const [keysRes, poolsRes] = await Promise.all([api.get('/admin/keys'), api.get('/admin/pools')])
-    rows.value = keysRes.data
-    pools.value = poolsRes.data
+    rows.value = asList(keysRes.data)
+    pools.value = asList(poolsRes.data)
   } catch (e: any) { message.error('加载失败: ' + (e?.message || '未知错误')); console.error(e) }
   finally { loading.value = false }
 }

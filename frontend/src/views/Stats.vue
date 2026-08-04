@@ -7,7 +7,7 @@ import { BarChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
 import VChart from 'vue-echarts'
 import TopBar from '../components/TopBar.vue'
-import api from '../api'
+import api, { asList } from '../api'
 
 use([CanvasRenderer, BarChart, GridComponent, TooltipComponent, LegendComponent])
 
@@ -30,8 +30,8 @@ async function load() {
       api.get(`/admin/stats/timeseries?days=${chartDays.value}`),
       api.get('/admin/stats/by-model'),
     ])
-    timeseries.value = ts.data
-    byModel.value = md.data
+    timeseries.value = asList(ts.data)
+    byModel.value = asList(md.data)
   } catch (e: any) { message.error('加载失败: ' + (e?.message || '未知错误')); console.error(e) }
   finally { loading.value = false }
 }
