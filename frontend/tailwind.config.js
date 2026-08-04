@@ -9,31 +9,31 @@ export default {
     extend: {
       colors: {
         // 来自 Stitch DESIGN.md - 深色主题色板
-        background: "#12121d",
-        surface: "#12121d",
+        background: "#10141a",
+        surface: "#141920",
         "surface-container-lowest": "#0d0d18",
-        "surface-container-low": "#1b1a26",
-        "surface-container": "#1f1e2a",
-        "surface-container-high": "#292935",
-        "surface-container-highest": "#343440",
-        "surface-bright": "#383845",
-        border: "#2e2e42",
+        "surface-container-low": "#151b22",
+        "surface-container": "#1a2129",
+        "surface-container-high": "#222b34",
+        "surface-container-highest": "#2d3741",
+        "surface-bright": "#35414b",
+        border: "#2b3540",
         "outline-variant": "#404752",
         outline: "#8a919e",
 
         // 主色
-        primary: "#a2c9ff",
-        "primary-container": "#409eff",
+        primary: "#a5d8c3",
+        "primary-container": "#5ca48d",
         info: "#2080F0",
         success: "#18A058",
         warning: "#F0A020",
         error: "#D03050",
 
         // 文字
-        "text-primary": "#ffffff",
-        "text-secondary": "#8c8c8c",
-        "on-surface": "#e3e0f1",
-        "on-surface-variant": "#c0c7d4",
+        "text-primary": "#f3f6f7",
+        "text-secondary": "#8d9aa6",
+        "on-surface": "#dbe4e7",
+        "on-surface-variant": "#b4c0c7",
       },
       borderRadius: {
         DEFAULT: "0.25rem",

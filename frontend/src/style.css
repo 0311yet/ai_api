@@ -1,28 +1,26 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* 自定义滚动条（深色） */
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: #12121d; }
-::-webkit-scrollbar-thumb { background: #2e2e42; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #404752; }
-
-/* 全局 */
-body {
-  background: #12121d;
-  color: #ffffff;
-  font-family: 'Inter', system-ui, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+::-webkit-scrollbar { width: 7px; height: 7px; }
+::-webkit-scrollbar-track { background: #10141a; }
+::-webkit-scrollbar-thumb { background: #303943; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #45515d; }
+body { background: #10141a; color: #f3f6f7; font-family: 'Inter', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+button, a, input { outline-color: #78b6a2; }
+.brand-mark { background: linear-gradient(145deg, #77bca6, #4e8e7b); box-shadow: 0 8px 20px rgba(92, 164, 141, .18); }
+.nav-item-active { background: rgba(119, 188, 166, .12); box-shadow: inset 3px 0 0 #79bda7; }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; background: #70c59f; box-shadow: 0 0 0 3px rgba(112, 197, 159, .12); }
+.avatar { width: 25px; height: 25px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: #293a3a; color: #9ed4be; font-size: 11px; font-weight: 700; }
+@media (max-width: 800px) {
+  .app-sidebar { width: 68px; padding-inline: 8px; }
+  .app-sidebar .brand-mark { margin-inline: auto; }
+  .app-sidebar .brand-mark + div, .app-sidebar nav > div > div:first-child, .app-sidebar button { display: none; }
+  .app-sidebar .nav-item { justify-content: center; padding-inline: 0; }
+  .app-sidebar .nav-item .material-symbols-outlined { font-size: 20px; }
+  .app-sidebar .px-3.py-2 { justify-content: center; padding-inline: 0; font-size: 0; }
+  .topbar { padding-inline: 16px; }
 }
-
-/* Naive UI 覆盖：让 modal table 等也匹配 Stitch 深色色板 */
-:root body {
-  --n-color: #1f1e2a !important;  /* surface-container */
-  --n-color-modal: #1f1e2a !important;
-  --n-color-target: #1f1e2a !important;
-}
+:root body { --n-color: #1a2129 !important; --n-color-modal: #1a2129 !important; --n-color-target: #1a2129 !important; }
