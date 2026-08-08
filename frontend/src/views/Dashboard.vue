@@ -25,7 +25,9 @@ const dayOptions = [
 ]
 const lastUpdated = ref<string>('')
 
-let refreshTimer: ReturnType<typeof setInterval> | null = null
+let refreshTimer: ReturnType<typeof setTimeout> | null = null
+let requestInFlight = false
+let isMounted = false
 
 async function loadStats() {
   try {
@@ -48,35 +50,59 @@ async function loadTimeseries() {
 }
 
 async function load(manual: boolean = false) {
+  if (requestInFlight) return
+  requestInFlight = true
   if (manual) loading.value = true
-  await Promise.all([loadStats(), loadTimeseries()])
-  lastUpdated.value = new Date().toLocaleTimeString()
-  if (manual) loading.value = false
-}
-
-function refreshStatsOnly() {
-  loadStats().then(() => {
+  try {
+    await Promise.all([loadStats(), loadTimeseries()])
     lastUpdated.value = new Date().toLocaleTimeString()
-  })
-}
-
-function manualRefresh() {
-  load(true)
-  if (refreshTimer) {
-    clearInterval(refreshTimer)
-    refreshTimer = setInterval(refreshStatsOnly, REFRESH_INTERVAL_MS)
+  } finally {
+    requestInFlight = false
+    if (manual) loading.value = false
   }
 }
 
+async function refreshStatsOnly() {
+  if (!isMounted) return
+  if (requestInFlight) {
+    scheduleRefresh()
+    return
+  }
+  requestInFlight = true
+  try {
+    await loadStats()
+    lastUpdated.value = new Date().toLocaleTimeString()
+  } finally {
+    requestInFlight = false
+    scheduleRefresh()
+  }
+}
+
+function scheduleRefresh() {
+  if (isMounted) refreshTimer = setTimeout(refreshStatsOnly, REFRESH_INTERVAL_MS)
+}
+
+async function manualRefresh() {
+  if (refreshTimer) {
+    clearTimeout(refreshTimer)
+    refreshTimer = null
+  }
+  await load(true)
+  scheduleRefresh()
+}
+
 onMounted(async () => {
+  isMounted = true
   await load(true)
   // Auto-refresh only the stat cards every 3s; timeseries is historical and
   // only changes daily, so skip it to avoid unnecessary heavy queries.
-  refreshTimer = setInterval(refreshStatsOnly, REFRESH_INTERVAL_MS)
+  scheduleRefresh()
 })
 
 onBeforeUnmount(() => {
-  if (refreshTimer) clearInterval(refreshTimer)
+  isMounted = false
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = null
 })
 
 async function onChartDaysChange() {
