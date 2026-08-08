@@ -7,6 +7,7 @@ import { healthAPI } from '../api'
 const loading = ref(false)
 const message = useMessage()
 const platforms = ref<any[]>([])
+const diagnostics = ref<any[]>([])
 const stickyActive = ref(0)
 
 interface KeyHealth {
@@ -53,8 +54,13 @@ const lastUpdated = ref<string>('')
 async function load(manual: boolean = false) {
   if (manual) loading.value = true
   try {
-    const { data } = await healthAPI.platforms()
+    const [platformResponse, diagnosticResponse] = await Promise.all([
+      healthAPI.platforms(),
+      healthAPI.providers(),
+    ])
+    const data = platformResponse.data
     platforms.value = data.platforms || []
+    diagnostics.value = diagnosticResponse.data.providers || []
     stickyActive.value = data.sticky_sessions_active || 0
     lastUpdated.value = new Date().toLocaleTimeString()
   } catch (e: any) {
@@ -128,6 +134,28 @@ onUnmounted(() => {
       <NSpin v-if="loading" class="self-center py-16" size="large" />
 
       <template v-else>
+        <div v-if="diagnostics.length" class="grid gap-3 md:grid-cols-3">
+          <NCard v-for="provider in diagnostics" :key="provider.platform_id" size="small" :bordered="true" class="!border-border">
+            <div class="flex items-center justify-between gap-3">
+              <span class="font-semibold text-sm text-text-primary">{{ provider.platform_name }}</span>
+              <NTag size="small" :type="provider.status === 'healthy' ? 'success' : provider.status === 'suspected_outage' ? 'error' : 'warning'">
+                {{ provider.status.replaceAll('_', ' ') }}
+              </NTag>
+            </div>
+            <div class="mt-3 grid grid-cols-3 gap-2 text-center text-[11px]">
+              <div><div class="font-mono font-bold text-[15px] text-text-primary">{{ provider.requests }}</div><div class="text-text-secondary">Requests</div></div>
+              <div><div class="font-mono font-bold text-[15px] text-success">{{ provider.successes }}</div><div class="text-text-secondary">Success</div></div>
+              <div><div class="font-mono font-bold text-[15px] text-error">{{ provider.failures }}</div><div class="text-text-secondary">Failures</div></div>
+            </div>
+            <div class="mt-3 text-xs text-text-secondary">{{ provider.reason }}</div>
+            <div v-if="Object.keys(provider.failure_types || {}).length" class="mt-2 flex flex-wrap gap-1">
+              <NTag v-for="(count, type) in provider.failure_types" :key="type" size="tiny" type="warning">
+                {{ type }}: {{ count }}
+              </NTag>
+            </div>
+          </NCard>
+        </div>
+
         <!-- Platforms grid: 2 columns, side by side -->
         <div
           class="grid gap-4"

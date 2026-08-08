@@ -31,6 +31,26 @@ from app.services.pool_router import order_routable_items
 from app.services import provider_health as ph
 
 
+def classify_upstream_failure(status_code: Optional[int] = None, exc: Optional[Exception] = None) -> str:
+    """Classify failures for provider-level health diagnostics."""
+    if isinstance(exc, httpx.TimeoutException):
+        return "upstream_timeout"
+    if isinstance(exc, (httpx.ConnectError, httpx.NetworkError, httpx.RemoteProtocolError)):
+        return "upstream_network_error"
+    if status_code == 429:
+        return "upstream_rate_limited"
+    if status_code in (401, 403):
+        return "upstream_auth_error"
+    if status_code is not None and 500 <= status_code <= 599:
+        return "upstream_5xx"
+    return "upstream_4xx" if status_code is not None and 400 <= status_code <= 499 else "upstream_error"
+
+
+def format_upstream_failure(failure_type: str, label: str, key_id: int, status_code: Optional[int] = None) -> str:
+    suffix = f" upstream {status_code}" if status_code is not None else ""
+    return f"{failure_type}: {label} (key {key_id}){suffix}"
+
+
 async def authenticate_client(
     session: AsyncSession,
     authorization: str,
@@ -129,6 +149,9 @@ async def proxy_json_request(
 
     for pool_item in ordered:
         platform_key_id = pool_item.platform_key_id
+        last_platform_key_id = platform_key_id
+        last_provider_id = pool_item.platform_id
+        last_provider_model = pool_item.model
         state = ph.get_platform_key_state(platform_key_id)
         if not state:
             # 无状态（不应发生），创建默认状态
@@ -192,10 +215,11 @@ async def proxy_json_request(
                     # 429：触发惩罚 + 冷却
                     dur = state.record_429()
                     await ph.record_request(platform_key_id, pool_item.model, tokens=0)
-                    last_error = f"{state.key_label} (key {platform_key_id}) is in cooldown ({int(dur.total_seconds()) if hasattr(dur, 'total_seconds') else int(dur)}s)"
+                    last_error = format_upstream_failure("upstream_rate_limited", state.key_label, platform_key_id, 429)
                     continue
                 else:
-                    last_error = f"{pool_item.key_label} (key {platform_key_id}) upstream {resp.status_code}"
+                    failure_type = classify_upstream_failure(resp.status_code)
+                    last_error = format_upstream_failure(failure_type, pool_item.key_label, platform_key_id, resp.status_code)
                     # Client/authentication errors are deterministic; do not hide them as 502.
                     if 400 <= resp.status_code < 500:
                         return resp.status_code, {"error": {"message": last_error}}, _make_meta(
@@ -203,13 +227,15 @@ async def proxy_json_request(
                         )
                     continue
         except httpx.TimeoutException:
-            last_error = f"{pool_item.key_label} (key {platform_key_id}) timeout"
+            last_error = format_upstream_failure("upstream_timeout", pool_item.key_label, platform_key_id)
         except Exception as e:
-            last_error = f"{pool_item.key_label} (key {platform_key_id}) error: {str(e)}"
+            failure_type = classify_upstream_failure(exc=e)
+            last_error = f"{failure_type}: {pool_item.key_label} (key {platform_key_id}) error: {str(e)}"
 
     # 所有尝试都失败
     return 502, {"error": {"message": f"All upstreams failed: {last_error}"}}, _make_meta_fail(
-        last_provider_id, last_provider_model, fallback_count, start, last_error
+        last_provider_id, last_provider_model, fallback_count, start, last_error,
+        platform_key_id=last_platform_key_id,
     )
 
 
@@ -229,6 +255,9 @@ async def proxy_stream_request(
 
     for pool_item in ordered:
         platform_key_id = pool_item.platform_key_id
+        last_platform_key_id = platform_key_id
+        last_provider_id = pool_item.platform_id
+        last_provider_model = pool_item.model
         state = ph.get_platform_key_state(platform_key_id)
         if not state:
             state = ph.PlatformKeyHealthState(
@@ -316,7 +345,7 @@ async def proxy_stream_request(
             elif resp.status_code == 429:
                 dur = state.record_429()
                 await ph.record_request(platform_key_id, pool_item.model, tokens=0)
-                last_error = f"{state.key_label} (key {platform_key_id}) is in cooldown"
+                last_error = format_upstream_failure("upstream_rate_limited", state.key_label, platform_key_id, 429)
                 await resp.aread()
                 await resp.aclose()
                 await client.aclose()
@@ -325,18 +354,23 @@ async def proxy_stream_request(
                 await resp.aread()
                 await resp.aclose()
                 await client.aclose()
-                last_error = f"{pool_item.key_label} (key {platform_key_id}) upstream {resp.status_code}"
+                failure_type = classify_upstream_failure(resp.status_code)
+                last_error = format_upstream_failure(failure_type, pool_item.key_label, platform_key_id, resp.status_code)
                 if 400 <= resp.status_code < 500:
                     return resp.status_code, None, _make_meta(
                         pool_item, platform_key_id, fallback_count, start, ttft=ttft, error=last_error
                     )
                 continue
         except httpx.TimeoutException:
-            last_error = f"{pool_item.key_label} (key {platform_key_id}) timeout"
+            last_error = format_upstream_failure("upstream_timeout", pool_item.key_label, platform_key_id)
         except Exception as e:
-            last_error = f"{pool_item.key_label} (key {platform_key_id}) error: {str(e)}"
+            failure_type = classify_upstream_failure(exc=e)
+            last_error = f"{failure_type}: {pool_item.key_label} (key {platform_key_id}) error: {str(e)}"
 
-    return 502, None, None
+    return 502, None, _make_meta_fail(
+        last_provider_id, last_provider_model, fallback_count, start, last_error,
+        platform_key_id=last_platform_key_id,
+    )
 
 
 def _make_meta(
@@ -372,11 +406,12 @@ def _make_meta_fail(
     fallback_count: int,
     start: float,
     error: str,
+    platform_key_id: Optional[int] = None,
 ) -> dict:
     return {
         "pool_item_id": None,
         "platform_id": platform_id,
-        "platform_key_id": None,
+        "platform_key_id": platform_key_id,
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "total_tokens": 0,

@@ -10,14 +10,14 @@ GET /admin/health/rate-limit/<id>    - 单个 PlatformKey 限流详情
 - 同一个 PoolItem 的不同 Keys 显示为多个条目（支持多 Key 负载均衡展示）
 """
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.models import Pool, PoolItem, Platform, PlatformKey
+from app.models import Pool, PoolItem, Platform, PlatformKey, RequestLog
 from app.schemas import (
     KeyHealthItem, PoolItemHealthItem, RateLimitWindow, PoolHealthOut,
     HealthOverview, PlatformsHealthOut, PlatformHealthItem, PlatformHealthKeyItem,
@@ -25,6 +25,97 @@ from app.schemas import (
 from app.services import provider_health as ph
 
 router = APIRouter(prefix="/admin/health", tags=["health"])
+
+
+@router.get("/providers")
+async def provider_health_diagnostics(
+    window_minutes: int = 15,
+    session: AsyncSession = Depends(get_session),
+):
+    """Infer provider outages from recent routed request results.
+
+    This is deliberately evidence-based: a provider is only marked as a
+    suspected outage after multiple upstream 5xx/timeout/network failures,
+    which avoids confusing a bad API key or a client request with a vendor
+    incident.
+    """
+    window_minutes = max(1, min(window_minutes, 1440))
+    cutoff = datetime.utcnow() - timedelta(minutes=window_minutes)
+    result = await session.execute(
+        select(RequestLog, Platform)
+        .join(Platform, RequestLog.platform_id == Platform.id)
+        .where(RequestLog.created_at >= cutoff)
+    )
+    grouped = {}
+    for log, platform in result.all():
+        item = grouped.setdefault(platform.id, {
+            "platform_id": platform.id,
+            "platform_name": platform.name,
+            "base_url": platform.base_url,
+            "requests": 0,
+            "successes": 0,
+            "failures": 0,
+            "failure_types": {},
+            "models": {},
+            "keys": set(),
+            "last_failure_at": None,
+        })
+        item["requests"] += 1
+        if log.status == "success":
+            item["successes"] += 1
+        else:
+            item["failures"] += 1
+            failure_type = (log.error_message or "upstream_error").split(":", 1)[0]
+            item["failure_types"][failure_type] = item["failure_types"].get(failure_type, 0) + 1
+            if log.created_at and (item["last_failure_at"] is None or log.created_at > item["last_failure_at"]):
+                item["last_failure_at"] = log.created_at
+        if log.platform_key_id:
+            item["keys"].add(log.platform_key_id)
+        model_stats = item["models"].setdefault(log.model, {"requests": 0, "failures": 0})
+        model_stats["requests"] += 1
+        model_stats["failures"] += log.status != "success"
+
+    output = []
+    for item in grouped.values():
+        upstream_failures = sum(
+            count for kind, count in item["failure_types"].items()
+            if kind in {"upstream_timeout", "upstream_network_error", "upstream_5xx"}
+        )
+        dominant = max(item["failure_types"], key=item["failure_types"].get, default=None)
+        if upstream_failures >= 3 and item["successes"] == 0:
+            status = "suspected_outage"
+            reason = "multiple upstream failures with no successful request in the window"
+        elif dominant == "upstream_auth_error" and item["failures"] >= 2:
+            status = "credential_issue"
+            reason = "upstream rejected the configured credentials"
+        elif dominant == "upstream_rate_limited" and item["failures"] >= 2:
+            status = "rate_limited"
+            reason = "upstream returned repeated rate-limit responses"
+        elif upstream_failures:
+            status = "degraded"
+            reason = "some upstream requests failed"
+        else:
+            status = "healthy"
+            reason = "no classified upstream failure observed"
+
+        output.append({
+            "platform_id": item["platform_id"],
+            "platform_name": item["platform_name"],
+            "base_url": item["base_url"],
+            "status": status,
+            "reason": reason,
+            "window_minutes": window_minutes,
+            "requests": item["requests"],
+            "successes": item["successes"],
+            "failures": item["failures"],
+            "success_rate": round(item["successes"] / item["requests"], 4) if item["requests"] else 0,
+            "upstream_failure_count": upstream_failures,
+            "failure_types": item["failure_types"],
+            "models": item["models"],
+            "observed_key_count": len(item["keys"]),
+            "last_failure_at": item["last_failure_at"].isoformat() if item["last_failure_at"] else None,
+        })
+    return {"window_minutes": window_minutes, "providers": sorted(output, key=lambda x: x["platform_name"])}
 
 
 @router.get("/overview", response_model=HealthOverview)

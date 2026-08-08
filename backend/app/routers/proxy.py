@@ -308,9 +308,15 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
     if is_stream:
         code, gen, meta_container = await proxy_svc.proxy_stream_request(pool, openai_body, sticky_provider_id)
         if code != 200:
-            log = proxy_svc.make_log(client_key_id, model, request_id, "failed", {
-                "latency_ms": 0, "ttft_ms": 0, "error": "All upstreams failed",
-            }, ip=ip, ua=ua, request_body=raw_request_body, is_stream=True)
+            failure_meta = meta_container or {
+                "latency_ms": 0,
+                "ttft_ms": 0,
+                "error": "upstream_error: all upstreams failed",
+            }
+            log = proxy_svc.make_log(
+                client_key_id, model, request_id, "failed", failure_meta,
+                ip=ip, ua=ua, request_body=raw_request_body, is_stream=True,
+            )
             session.add(log)
             await proxy_svc.increment_key_usage(client_key_id, 0)
             await session.commit()
@@ -318,7 +324,7 @@ async def anthropic_messages(request: Request, session: AsyncSession = Depends(g
                 status_code=502,
                 content={
                     "type": "error",
-                    "error": {"type": "invalid_request_error", "message": "All upstreams failed"},
+                    "error": {"type": "upstream_error", "message": failure_meta.get("error", "All upstreams failed")},
                 },
             )
 
